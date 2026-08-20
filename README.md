@@ -1,6 +1,7 @@
 # Fortress Besieged
 
 Fabric 模组：围城集群（Siege Cluster）——怪物集群对 PBS 占领/边界区块破块与追击。
+依赖的模组为https://github.com/luoweifengx/PlayerBlockState(PBS)
 
 ## 文档
 
@@ -30,4 +31,4 @@ For setup instructions, please see the [Fabric Documentation page](https://docs.
 
 ## License
 
-This template is available under the CC0 license. Feel free to learn from it and incorporate it in your own projects.
+[MIT](LICENSE) © 2026 luoweifengx

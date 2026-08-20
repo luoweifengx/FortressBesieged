@@ -3,15 +3,16 @@
 	"id": "fortress-besieged",
 	"version": "${version}",
 	"name": "Fortress Besieged",
-	"description": "This is an example description! Tell everyone what your mod is about!",
+	"description": "Siege clusters that assault PBS occupied/border chunks.",
 	"authors": [
-		"Me!"
+		"luoweifengx"
 	],
 	"contact": {
-		"homepage": "https://fabricmc.net/",
-		"sources": "https://github.com/FabricMC/fabric-example-mod"
+		"homepage": "https://github.com/luoweifengx/FortressBesieged",
+		"sources": "https://github.com/luoweifengx/FortressBesieged",
+		"issues": "https://github.com/luoweifengx/FortressBesieged/issues"
 	},
-	"license": "CC0-1.0",
+	"license": "MIT",
 	"icon": "assets/fortress-besieged/icon.png",
 	"environment": "*",
 	"entrypoints": {
