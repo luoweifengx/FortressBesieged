@@ -1,0 +1,39 @@
+{
+	"schemaVersion": 1,
+	"id": "fortress-besieged",
+	"version": "${version}",
+	"name": "Fortress Besieged",
+	"description": "This is an example description! Tell everyone what your mod is about!",
+	"authors": [
+		"Me!"
+	],
+	"contact": {
+		"homepage": "https://fabricmc.net/",
+		"sources": "https://github.com/FabricMC/fabric-example-mod"
+	},
+	"license": "CC0-1.0",
+	"icon": "assets/fortress-besieged/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"luowei.fortress_besieged.FortressBesieged"
+		],
+		"client": [
+			"luowei.fortress_besieged.client.FortressBesiegedClient"
+		]
+	},
+	"mixins": [
+		"fortress-besieged.mixins.json",
+		{
+			"config": "fortress-besieged.client.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=0.19.3",
+		"minecraft": "~1.21.5",
+		"java": ">=21",
+		"fabric-api": "*",
+		"player-block-status": ">=0.2.3"
+	}
+}
