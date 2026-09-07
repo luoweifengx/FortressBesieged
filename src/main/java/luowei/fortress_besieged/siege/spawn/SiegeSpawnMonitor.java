@@ -18,7 +18,7 @@ import luowei.fortress_besieged.siege.SiegeClusterState;
 
 /**
  * Structured spawn / cluster-lifecycle logs.
- * INFO = cluster spawn, state change; DEBUG = pick attempts, timings, skip reasons.
+ * INFO = cluster spawn, state change, disband; DEBUG = pick attempts, timings, skip reasons.
  * Logger name: {@code fortress-besieged}.
  */
 public final class SiegeSpawnMonitor {
@@ -129,6 +129,24 @@ public final class SiegeSpawnMonitor {
 		return ns + ew + " dx=" + dx + " dz=" + dz;
 	}
 
+	/**
+	 * Chinese 8-way from {@code from} toward {@code to} (EW then NS: 东南, not 南东).
+	 * Minecraft: +X east, +Z south.
+	 */
+	public static String compassCn(ChunkPos from, ChunkPos to) {
+		if (from == null || to == null) {
+			return "附近";
+		}
+		int dx = to.x - from.x;
+		int dz = to.z - from.z;
+		if (dx == 0 && dz == 0) {
+			return "附近";
+		}
+		String ew = dx > 0 ? "东" : dx < 0 ? "西" : "";
+		String ns = dz > 0 ? "南" : dz < 0 ? "北" : "";
+		return ew + ns;
+	}
+
 	public static void spawnedCluster(
 			ServerLevel level,
 			UUID targetId,
@@ -179,6 +197,32 @@ public final class SiegeSpawnMonitor {
 				chunk(target),
 				attackDir(anchor, target),
 				living);
+	}
+
+	/** Wipe, ≤2 left, or {@code /siege disband}. Always INFO. */
+	public static void disbanded(SiegeCluster cluster, SiegeClusterState from, String reason, int tick, int living) {
+		if (cluster == null) {
+			return;
+		}
+		ServerLevel level = cluster.getLevel();
+		ChunkPos anchor = cluster.getAnchorChunk();
+		ChunkPos target = cluster.getTargetChunk();
+		LOGGER.info(
+				"[siege] disbanded cluster={} {}→DISBAND reason={} dim={} gameTime={} tick={} pos={} chunk={} targetChunk={} dir={} living={} template={} hell={} targetId={}",
+				cluster.getId(),
+				from,
+				reason,
+				dim(level),
+				level == null ? -1L : level.getGameTime(),
+				tick,
+				blockPos(level, anchor),
+				chunk(anchor),
+				chunk(target),
+				attackDir(anchor, target),
+				living,
+				cluster.describeTemplate(),
+				cluster.isHell(),
+				target(level, cluster.getSiegeTargetId()));
 	}
 
 	private static String resolveName(MinecraftServer server, UUID id) {

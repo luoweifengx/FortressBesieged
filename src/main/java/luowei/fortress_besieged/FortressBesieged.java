@@ -23,6 +23,7 @@ import luowei.fortress_besieged.siege.SiegeCommands;
 import luowei.fortress_besieged.siege.SiegePlayerProtection;
 import luowei.fortress_besieged.siege.SiegeProgressionFlags;
 import luowei.fortress_besieged.siege.path.SiegePathCostConfig;
+import luowei.fortress_besieged.siege.spawn.HellSpawnScheduler;
 import luowei.fortress_besieged.siege.spawn.SiegeClusterConfig;
 import luowei.fortress_besieged.siege.spawn.SiegeSpawnScheduler;
 import luowei.fortress_besieged.siege.spawn.WildernessPackTracker;
@@ -52,6 +53,7 @@ public class FortressBesieged implements ModInitializer {
 			if (world instanceof ServerLevel serverLevel) {
 				SiegeClusterManager.tickLevel(serverLevel);
 				SiegeSpawnScheduler.onWorldTick(serverLevel);
+				HellSpawnScheduler.onWorldTick(serverLevel);
 				WildernessSpawnScheduler.onWorldTick(serverLevel);
 			}
 		});
@@ -59,6 +61,7 @@ public class FortressBesieged implements ModInitializer {
 		ServerLivingEntityEvents.AFTER_DAMAGE.register((entity, source, baseDamageTaken, damageTaken, blocked) -> {
 			if (entity instanceof Mob mob) {
 				SiegeClusterManager.onMobDamaged(mob, source.getEntity());
+				WildernessPackTracker.onMobDamaged(mob, source.getEntity());
 			}
 		});
 
@@ -92,6 +95,7 @@ public class FortressBesieged implements ModInitializer {
 				SiegeClusterManager.unloadLevel(serverLevel);
 				WildernessPackTracker.clearLevel(serverLevel);
 				WildernessSpawnScheduler.clearLevel(serverLevel.dimension());
+				HellSpawnScheduler.clearLevel(serverLevel.dimension());
 			}
 		});
 
@@ -107,6 +111,7 @@ public class FortressBesieged implements ModInitializer {
 			}
 			WildernessPackTracker.clearAll();
 			WildernessSpawnScheduler.clearAll();
+			HellSpawnScheduler.clearAll();
 		});
 
 		LOGGER.info("Fortress Besieged siege cluster system initialized");

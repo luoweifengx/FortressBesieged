@@ -26,9 +26,31 @@ public final class SiegeTemplateSelector {
 	) {
 	}
 
-	/** Natural waves and {@code /siege spawn} with no id / {@code default}. */
+	/** {@code /siege spawn} with no id / {@code default}: unlocked tiers, no duty window. */
 	public static Selection roll(ServerLevel level, UUID targetId, Random random) {
-		return roll(level, targetId, random, SiegeClusterConfig.siege(), false);
+		return roll(level, targetId, random, false);
+	}
+
+	public static Selection roll(ServerLevel level, UUID targetId, Random random, boolean naturalDutyWindows) {
+		return roll(level, targetId, random, SiegeClusterConfig.siege(), true, naturalDutyWindows);
+	}
+
+	/** Hell-tier only: dimension-filtered hell templates. */
+	public static Selection rollHell(ServerLevel level, UUID targetId, Random random) {
+		SiegeClusterConfig config = SiegeClusterConfig.siege();
+		SiegeProgression progression = config.progression();
+		SiegeProgression.WorldSnapshot world = progression.snapshot(level, targetId);
+		SiegeProgression.Stage stage = progression.resolveStage(world);
+		List<SiegeClusterTemplate> matches = new ArrayList<>();
+		for (SiegeClusterTemplate template : config.templatesFor(null, SiegeProgression.TIER_HELL)) {
+			if (allowedIn(template, level)) {
+				matches.add(template);
+			}
+		}
+		SiegeClusterTemplate template = matches.isEmpty()
+				? null
+				: matches.get(random.nextInt(matches.size()));
+		return new Selection(stage, world, SiegeProgression.TIER_HELL, template);
 	}
 
 	/**
@@ -36,7 +58,7 @@ public final class SiegeTemplateSelector {
 	 * (spawn chunk is {@code NATURAL}, never {@code DEMON}).
 	 */
 	public static Selection rollWilderness(ServerLevel level, UUID targetId, Random random) {
-		return roll(level, targetId, random, SiegeClusterConfig.wilderness(), true);
+		return roll(level, targetId, random, SiegeClusterConfig.wilderness(), true, false);
 	}
 
 	private static Selection roll(
@@ -44,13 +66,15 @@ public final class SiegeTemplateSelector {
 			UUID targetId,
 			Random random,
 			SiegeClusterConfig config,
-			boolean excludeHell
+			boolean excludeHell,
+			boolean naturalDutyWindows
 	) {
 		SiegeProgression progression = config.progression();
 		SiegeProgression.WorldSnapshot world = progression.snapshot(level, targetId);
 		SiegeProgression.Stage stage = progression.resolveStage(world);
-		SiegeProgression.TierRoll tierRoll = SiegeProgression.TierRoll.of(level, stage, excludeHell);
-		String tier = progression.rollTier(stage, world, random, false, tierRoll);
+		SiegeProgression.TierRoll tierRoll = SiegeProgression.TierRoll.of(level, stage, excludeHell, naturalDutyWindows);
+		long timeOfDay = SiegeDayClock.timeOfDay(level);
+		String tier = progression.rollTier(stage, world, random, false, tierRoll, timeOfDay);
 		SiegeClusterTemplate template = pickTemplate(config, level, tier, random, excludeHell, tierRoll.excludeRoadkill());
 		if (template == null) {
 			template = config.templates().stream()
@@ -66,19 +90,21 @@ public final class SiegeTemplateSelector {
 		Selection selection = new Selection(stage, world, actualTier, template);
 		if (SiegeSpawnMonitor.isDebug()) {
 			SiegeSpawnMonitor.debug(
-					"template player={} stage={} worldOwned={} iron={} diamond={} demon={} tier={} id={} race={} hell={} wilderness={} netherMerge={}",
+					"template player={} stage={} worldOwned={} iron={} ironArmor={} diamond={} demon={} tier={} id={} race={} hell={} wilderness={} netherMerge={} duty={}",
 					SiegeSpawnMonitor.target(level, targetId),
 					stage == null ? "?" : stage.id(),
 					world.worldOwned(),
-					world.hostUnlocked(),
-					world.legionUnlocked(),
+					world.hasIron(),
+					world.hasIronArmor(),
+					world.hasDiamond(),
 					world.hasDemonChunk(),
 					actualTier,
 					template == null ? "null" : template.id(),
 					template == null ? "?" : template.race(),
 					template != null && template.isHell(),
 					excludeHell,
-					tierRoll.mergeUnlocked());
+					tierRoll.mergeUnlocked(),
+					tierRoll.applyDutyWindows());
 		}
 		return selection;
 	}

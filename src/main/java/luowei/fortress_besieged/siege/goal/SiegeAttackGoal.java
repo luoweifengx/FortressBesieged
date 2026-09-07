@@ -12,6 +12,7 @@ import luowei.fortress_besieged.siege.targeting.SiegeTargeting;
 
 /**
  * ATTACK：近战用原版 navigation {@code moveTo} 追打；持弓骷髅 / 恶魂只 {@code setTarget}，射击走原版 Goal。
+ * 锁定仇恨（受击打断 / 地狱预警）不受 7×7 限制，直到绳长丢失后再接回原工作。
  */
 public class SiegeAttackGoal extends Goal {
 	private final Mob mob;
@@ -38,7 +39,11 @@ public class SiegeAttackGoal extends Goal {
 		}
 		LivingEntity chase = cluster.resolveChaseTarget(serverLevel, record);
 		if (chase == null || !SiegeTargeting.isValidAttackTarget(chase)) {
-			record.returnToIdle();
+			if (record.hasLockedAggro()) {
+				cluster.onLockedAggroLost(mob);
+			} else {
+				record.returnToIdle();
+			}
 			return false;
 		}
 		target = chase;
@@ -75,11 +80,16 @@ public class SiegeAttackGoal extends Goal {
 		if (target == null) {
 			return;
 		}
-		if (!cluster.isInChaseZone(target)) {
-			SiegeUnitRecord record = cluster.getUnit(mob);
+		SiegeUnitRecord record = cluster.getUnit(mob);
+		boolean locked = record != null && record.hasLockedAggro();
+		if (!locked && !cluster.isInChaseZone(target)) {
 			if (record != null) {
 				record.returnToIdle();
 			}
+			return;
+		}
+		if (locked && !cluster.isWithinAggroLeash(mob, target)) {
+			cluster.onLockedAggroLost(mob);
 			return;
 		}
 		mob.setTarget(target);

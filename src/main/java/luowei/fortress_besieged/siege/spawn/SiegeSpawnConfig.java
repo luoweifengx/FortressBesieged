@@ -24,7 +24,7 @@ public final class SiegeSpawnConfig {
 	 * Per-candidate Bernoulli accept probability for spawning a cluster.
 	 * Expected sites ≈ candidates × this value; may be 0.
 	 */
-	public static final float SITE_ACCEPT_PROBABILITY = 0.15f;
+	public static final float SITE_ACCEPT_PROBABILITY = 0.4f;
 
 	/**
 	 * Fraction of the PBS EntityPollList to siege for {@code /siege spawn} command waves.
@@ -36,10 +36,11 @@ public final class SiegeSpawnConfig {
 
 	/**
 	 * How often (world game-time ticks) to refresh the PBS poll, and the
-	 * minimum gap between natural chance rolls for one target while its
-	 * stage window is open. A miss does not consume the rest of the day.
+	 * minimum gap between natural chance rolls for one online player while a cluster
+	 * type is on duty. Scaled by vanilla difficulty (×1 hard, ×2 normal, ×3 easy).
+	 * Hard base is 2000 ticks = 100 seconds. A miss does not consume the rest of the day.
 	 */
-	public static final int NATURAL_PLAN_INTERVAL_TICKS = 200;
+	public static final int NATURAL_PLAN_INTERVAL_TICKS = 2000;
 
 	/** Max natural {@code spawnRolled} calls per dimension per world tick. */
 	public static final int NATURAL_SPAWN_BUDGET_PER_TICK = 1;

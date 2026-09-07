@@ -27,7 +27,7 @@ public class SiegeIdleDecideGoal extends Goal {
 			return false;
 		}
 		SiegeUnitRecord record = cluster.getUnit(mob);
-		return record != null && record.getMode() == SiegeUnitMode.IDLE;
+		return record != null && record.getMode() == SiegeUnitMode.IDLE && !record.isReturningHome();
 	}
 
 	@Override

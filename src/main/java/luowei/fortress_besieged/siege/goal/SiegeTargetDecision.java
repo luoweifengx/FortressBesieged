@@ -64,8 +64,9 @@ public final class SiegeTargetDecision {
 		boolean firstRoll = !record.isFirstTargetRollDone();
 		int denom = firstRoll ? INITIAL_ATTACK_CHANCE_DENOM : LATER_ATTACK_CHANCE_DENOM;
 		record.markFirstTargetRollDone();
-		int roll = mob.getRandom().nextInt(denom);
-		boolean attackHit = roll == 0;
+		boolean hell = cluster.isHell();
+		int roll = hell ? 0 : mob.getRandom().nextInt(denom);
+		boolean attackHit = hell || roll == 0;
 
 		if (attackHit) {
 			LivingEntity target = findNearestAttackTarget(mob, serverLevel, cluster);
@@ -111,7 +112,7 @@ public final class SiegeTargetDecision {
 		LivingEntity best = null;
 		double bestDist = Double.MAX_VALUE;
 		for (LivingEntity entity : found) {
-			if (cluster != null && !cluster.isInChaseZone(entity)) {
+			if (cluster != null && !cluster.isInWarningZone(entity)) {
 				continue;
 			}
 			double dist = mob.distanceToSqr(entity);

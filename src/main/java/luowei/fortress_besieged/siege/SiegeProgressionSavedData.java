@@ -14,15 +14,16 @@ import net.minecraft.world.level.saveddata.SavedData;
 import net.minecraft.world.level.saveddata.SavedDataType;
 
 /**
- * Sticky iron / diamond stage unlocks per poll-target id (org UUID or solo player UUID).
+ * Sticky iron / iron-armor / diamond stage unlocks per poll-target id (org UUID or solo player UUID).
  * Stored on the overworld: {@code saves/&lt;world&gt;/data/fortress_besieged_progression.dat}.
  */
 public final class SiegeProgressionSavedData extends SavedData {
 	public static final String ID = "fortress_besieged_progression";
 
-	public record TargetRecord(boolean hasIron, boolean hasDiamond) {
+	public record TargetRecord(boolean hasIron, boolean hasIronArmor, boolean hasDiamond) {
 		public static final Codec<TargetRecord> CODEC = RecordCodecBuilder.create(instance -> instance.group(
 				Codec.BOOL.optionalFieldOf("hasIron", false).forGetter(TargetRecord::hasIron),
+				Codec.BOOL.optionalFieldOf("hasIronArmor", false).forGetter(TargetRecord::hasIronArmor),
 				Codec.BOOL.optionalFieldOf("hasDiamond", false).forGetter(TargetRecord::hasDiamond)
 		).apply(instance, TargetRecord::new));
 	}
@@ -61,23 +62,32 @@ public final class SiegeProgressionSavedData extends SavedData {
 		return record != null && record.hasIron();
 	}
 
+	public boolean hasIronArmor(UUID targetId) {
+		TargetRecord record = targets.get(targetId);
+		return record != null && record.hasIronArmor();
+	}
+
 	public boolean hasDiamond(UUID targetId) {
 		TargetRecord record = targets.get(targetId);
 		return record != null && record.hasDiamond();
 	}
 
 	/** Sticky OR: once true, never reverts. */
-	public void grant(UUID targetId, boolean iron, boolean diamond) {
-		if (targetId == null || (!iron && !diamond)) {
+	public void grant(UUID targetId, boolean iron, boolean ironArmor, boolean diamond) {
+		if (targetId == null || (!iron && !ironArmor && !diamond)) {
 			return;
 		}
 		TargetRecord prev = targets.get(targetId);
 		boolean newIron = iron || (prev != null && prev.hasIron());
+		boolean newArmor = ironArmor || (prev != null && prev.hasIronArmor());
 		boolean newDiamond = diamond || (prev != null && prev.hasDiamond());
-		if (prev != null && prev.hasIron() == newIron && prev.hasDiamond() == newDiamond) {
+		if (prev != null
+				&& prev.hasIron() == newIron
+				&& prev.hasIronArmor() == newArmor
+				&& prev.hasDiamond() == newDiamond) {
 			return;
 		}
-		targets.put(targetId, new TargetRecord(newIron, newDiamond));
+		targets.put(targetId, new TargetRecord(newIron, newArmor, newDiamond));
 		setDirty();
 	}
 }

@@ -33,8 +33,8 @@ public class SiegeIdleReturnGoal extends Goal {
 		if (record == null || record.getMode() != SiegeUnitMode.IDLE) {
 			return false;
 		}
-		ChunkPos target = cluster.getTargetChunk();
-		return target != null && !mob.chunkPosition().equals(target);
+		ChunkPos home = cluster.getHomeChunk();
+		return home != null && !mob.chunkPosition().equals(home);
 	}
 
 	@Override
@@ -51,11 +51,11 @@ public class SiegeIdleReturnGoal extends Goal {
 	@Override
 	public void tick() {
 		mob.setTarget(null);
-		ChunkPos target = cluster.getTargetChunk();
-		if (target == null) {
+		ChunkPos home = cluster.getHomeChunk();
+		if (home == null) {
 			return;
 		}
-		if (mob.chunkPosition().equals(target)) {
+		if (mob.chunkPosition().equals(home)) {
 			mob.getNavigation().stop();
 			return;
 		}
@@ -70,11 +70,11 @@ public class SiegeIdleReturnGoal extends Goal {
 	}
 
 	private void moveHome() {
-		ChunkPos target = cluster.getTargetChunk();
-		if (target == null || !(mob.level() instanceof ServerLevel serverLevel)) {
+		ChunkPos home = cluster.getHomeChunk();
+		if (home == null || !(mob.level() instanceof ServerLevel serverLevel)) {
 			return;
 		}
-		BlockPos center = new BlockPos(target.getMiddleBlockX(), mob.blockPosition().getY(), target.getMiddleBlockZ());
+		BlockPos center = new BlockPos(home.getMiddleBlockX(), mob.blockPosition().getY(), home.getMiddleBlockZ());
 		int y = serverLevel.getHeight(net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, center.getX(), center.getZ());
 		mob.getNavigation().moveTo(center.getX() + 0.5D, y, center.getZ() + 0.5D, 1.0D);
 	}

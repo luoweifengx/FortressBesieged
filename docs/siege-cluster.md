@@ -13,7 +13,7 @@
 | 阶段 | 实现位置 | 行为摘要 |
 |------|----------|----------|
 | `ASSEMBLE` | `SiegeCluster.tickAssemble()` | **后续循环**（FREE→ASSEMBLE）：扫描锚点 `anchorChunk` 的 **4-邻接** `OCCUPIED`/`BORDER`，随机选一个作为 `targetChunk`，进入 `ASSAULT` |
-| `ASSAULT` | `tickAssault()` / `enterAssault()` / `startAssaultOn()` | **不再集群分配任务**；单位 IDLE 自决策 ATTACK/DESTROY；无可破块/区块非占领→`FREE`；`m≤2`→解散。**生成时**已通过 `startAssaultOn(最近占领/边界)` 直接进入 |
+| `ASSAULT` | `tickAssault()` / `enterAssault()` / `startAssaultOn()` | **不再集群分配任务**；单位 IDLE 自决策 ATTACK/DESTROY；无可破块/区块非占领→`FREE`；非地狱 `m≤2`→解散。**生成时**已通过 `startAssaultOn(最近占领/边界)` 直接进入。地狱档留在 ASSAULT，预警圈锁定仇恨，全灭才解散 |
 | `FREE` | `tickFree()` / `preassignFreeTargets()` | 以 `targetChunk` 为中心 **7×7** 预分配追击；受击且攻击者仍在 7×7 内才改当前追击；目标离开 7×7 放弃该目标并重分配（默认不回血，见 `healOnTargetLeaveZone`）；**3×3** 无敌对则 IDLE 回中心，全员到位后 `anchor=target` 再进 `ASSEMBLE` |
 
 枚举：`SiegeClusterState.java`。无补兵逻辑；单位只减不增。
@@ -26,14 +26,14 @@
 | 攻击追踪列表 | `List<UUID> attackTrackList` | 同上（主要 FREE） |
 | 攻击目标→单位 | `Map<UUID, List<UUID>> attackToUnits` | 同上（主要 FREE） |
 | 集群内「全局玩家映射」 | `Map<UUID, List<UUID>> globalPlayerMap` | 同上（主要 FREE；**嵌套在集群下**，非跨集群全局） |
-| 单位记录 | `mode` / `trackedBlock` / chase ids / `firstTargetRollDone` | `SiegeUnitRecord.java` |
+| 单位记录 | `mode` / `trackedBlock` / chase ids / `firstTargetRollDone` / 锁定仇恨与回家快照 | `SiegeUnitRecord.java` |
 | 单位定义 | `id` / `EntityType` / 盔甲与武器 `Item` | `spawn/SiegeUnitDefinition.java` |
 | 配方条目 | `SiegeUnitDefinition` + 权重 | `spawn/SiegeMobSpawnEntry.java` |
 | 配方 | id、`totalCount`、带权单位表 | `spawn/SiegeSpawnRecipe.java` |
 | 内存管理器 | `CLUSTERS` + `MOB_TO_CLUSTER` | `SiegeClusterManager.java` |
 | 维度存档 | `SavedData` / `fortress_besieged_clusters.dat` | `SiegeClusterSavedData.java` |
 | 玩家保护期（服务器级） | 主世界 `SavedData` / `fortress_besieged_player_protection.dat`：`daysInGame` + `isTimeToBesiege` | `SiegePlayerProtectionSavedData.java` |
-| 阶段解锁（服务器级） | 主世界 `SavedData` / `fortress_besieged_progression.dat`：sticky `hasIron` / `hasDiamond`（轮询目标 id） | `SiegeProgressionSavedData.java` |
+| 阶段解锁（服务器级） | 主世界 `SavedData` / `fortress_besieged_progression.dat`：sticky `hasIron` / `hasIronArmor` / `hasDiamond`（轮询目标 id） | `SiegeProgressionSavedData.java` |
 | 7×7 会话票 | `addTicketWithRadius` 半径 5（实体 tick 切比雪夫 3） | `SiegeChunkTickets.java` |
 
 ### Goals（AI）
@@ -41,9 +41,9 @@
 | Goal | 优先级 | 文件 | 作用 |
 |------|--------|------|------|
 | `SiegeDestroyBlockGoal` | 1 | `goal/SiegeDestroyBlockGoal.java` | 单位自选最近 PBS 块；代价寻路接近并敲；破后回 IDLE |
-| `SiegeAttackGoal` | 2 | `goal/SiegeAttackGoal.java` | 原版 `moveTo` 追打；目标无效或离开中心 7×7→IDLE |
-| `SiegeIdleReturnGoal` | 3 | `goal/SiegeIdleReturnGoal.java` | IDLE 且不在 `targetChunk`：导航回区块；已在区内不抢游荡 |
-| `SiegeIdleDecideGoal` | 4 | `goal/SiegeIdleDecideGoal.java` | ASSAULT+IDLE 降频决策：首次 1/3、之后 1/30 找人，否则挖最近 PBS 块 |
+| `SiegeAttackGoal` | 2 | `goal/SiegeAttackGoal.java` | 原版 `moveTo` 追打；目标无效或离开中心 7×7→IDLE。锁定仇恨不受 7×7 限制，直到绳长丢失 |
+| `SiegeIdleReturnGoal` | 3 | `goal/SiegeIdleReturnGoal.java` | IDLE 且不在 `getHomeChunk()`：导航回家；已在区内不抢游荡。地狱档家是恶魔格，其余是进攻格 |
+| `SiegeIdleDecideGoal` | 4 | `goal/SiegeIdleDecideGoal.java` | ASSAULT+IDLE 降频决策：首次 1/3、之后 1/30 找人，否则挖最近 PBS 块。地狱档每次都先找人 |
 | `WaterAvoidingRandomStrollGoal` | 7 | 原版 | IDLE 游荡（DESTROY/ATTACK 更高优） |
 | `WildernessChaseGoal` | 2 | `goal/WildernessChaseGoal.java` | **野外集群专用**：追白名单目标；无人则让位给游荡。不破块、不进围城状态机 |
 
@@ -72,10 +72,10 @@
 
 | 命令 | 作用 |
 |------|------|
-| `/siege spawn [recipe]` | 按比例从 PBS 轮询列表加权抽样目标（**先去掉** `isTimeToBesiege=false` 的保护期目标），对每个跑选点（Bernoulli p=0.15）并刷怪建集群 |
+| `/siege spawn [recipe]` | 按比例从 PBS 轮询列表加权抽样目标（**先去掉** `isTimeToBesiege=false` 的保护期目标），对每个跑选点（Bernoulli p=0.4）并刷怪建集群 |
 | `/siege spawn self [recipe]` | 以执行者玩家 UUID 为目标跑完整生成链路（OP 调试，**绕过**保护期） |
 | `/siege spawn entity <uuid> [recipe]` | 指定组织或独立玩家 UUID（OP 调试，**绕过**保护期） |
-| `/siege sites [uuid]` | 预览领土中心 / 最近敌对边界候选 / **E≈n×0.15** / 本次 Bernoulli 抽中站点 |
+| `/siege sites [uuid]` | 预览领土中心 / 最近敌对边界候选 / **E≈n×0.4** / 本次 Bernoulli 抽中站点 |
 | `/siege poll` | 列出当前可选围城目标 UUID；标 `protected` / `siegeable` 与天数 |
 | `/siege recipes` | 列出刷怪配方（id、总数、带权单位 id） |
 | `/siege create [chunkRadius]` | **遗留调试**：收编附近自然 `MONSTER`（非正式生成路径） |
@@ -88,12 +88,15 @@
 
 包：`siege/spawn/`
 
-本模组有两条互不替代的刷怪线：
+本模组有三条互不替代的刷怪线：
 
 | 线路 | 调度 | 落点 | 生命周期 |
 |------|------|------|----------|
-| **自然围城调度** | `SiegeSpawnScheduler` | `HOSTILE_BORDER`（地狱档在恶魔区块） | 7×7 票 + `setPersistenceRequired` + `SiegeClusterSavedData` |
+| **自然围城调度** | `SiegeSpawnScheduler` | `HOSTILE_BORDER` | 7×7 票 + `setPersistenceRequired` + `SiegeClusterSavedData` |
+| **地狱独立波次** | `HellSpawnScheduler` | PBS `DEMON` 恶魔区块 | 同上；票钉在恶魔格（锚点）；不走围城抽签 |
 | **野外集群** | `WildernessSpawnScheduler` | 仅 PBS `NATURAL` | 无票、不持久、不入存档；卸载即消失 |
+
+原版难度（`SiegeDifficulty`，跟世界难度走）：和平三条线都不掷；简单间隔 ×3、普通 ×2、困难 ×1。地狱波次除和平外不缩放间隔。装备掉落 = 原版 8.5% ×（简单 0.3 / 普通 0.4 / 困难 0.8）。
 
 #### 自然围城调度
 
@@ -103,25 +106,26 @@
 | 配方条目 | `SiegeMobSpawnEntry` | 单位定义 + 权重 |
 | 配方 | `SiegeSpawnRecipe` | id、总数 `m`、带权单位；`rollUnits` 按权抽取 |
 | 配方表 | `SiegeSpawnRecipes` | 内置 `default` / `light` / `heavy`（已迁到单位定义）；可 `register` |
-| 选点常量 | `SiegeSpawnConfig` | BORDER 抽样 4、外扩切比雪夫 ≤2、候选 ≤20、p=0.15、命令波次抽样比例、规划间隔 200 tick、每 tick 预算 1、新玩家保护天数默认 5 |
+| 选点常量 | `SiegeSpawnConfig` | BORDER 抽样 4、外扩切比雪夫 ≤2、候选 ≤20、**p=0.4**、命令波次抽样比例、困难基准规划间隔 **2000 tick**、每 tick 预算 1、新玩家保护天数默认 1 |
 | 目标抽样 | `SiegeTargetSampler` | 仅 `/siege spawn`：从 EntityPollList **已可围城**条目抽比例数量（默认均匀权重）；保护期目标不进抽样池 |
 | 玩家保护期 | `SiegePlayerProtection` | 主世界游戏日 `daysInGame` + sticky `isTimeToBesiege`；组织条目看 owner |
-| 选点 | `SiegeSpawnSiteSelector` | 抽 BORDER → 外扩 HOSTILE_BORDER → ≤20 → **Bernoulli p=0.15**（可为 0） |
-| 刷怪建群 | `SiegeClusterSpawner` | 每站点刷怪+装备 → `createCluster` → **最近 OCCUPIED/BORDER 作 target** → `startAssaultOn`。恶魂刷出 Y+6–10 |
-| 模板抽取 | `SiegeTemplateSelector` | 下界只滚 `race=nether`；主世界/末地排除烬军。指定 id 的 `/siege spawn` 不按维度过滤 |
-| 自然调度 | `SiegeSpawnScheduler` | 阶段窗口内按 200 tick 节奏掷 chance（未中可再掷）；每 tick 最多 1 个目标 `spawnRolled`；聊天广播位置。下界用主世界 `dayTime` |
+| 选点 | `SiegeSpawnSiteSelector` | 抽 BORDER → 外扩 HOSTILE_BORDER → ≤20 → **Bernoulli p=0.4**（可为 0） |
+| 刷怪建群 | `SiegeClusterSpawner` | 每站点刷怪+装备 → `createCluster` → **最近 OCCUPIED/BORDER 作 target** → `startAssaultOn`。落点是区块中心附近的 **heightmap 地表**（`MOTION_BLOCKING_NO_LEAVES`）；恶魂再 Y+6–10 |
+| 模板抽取 | `SiegeTemplateSelector` | 下界只滚 `race=nether`；主世界/末地排除烬军。自然调度还滤**类型值班窗口**。指定 id 的 `/siege spawn` 不按维度过滤、不看值班窗 |
+| 自然调度 | `SiegeSpawnScheduler` | **每个在线玩家一个槽**；间隔随难度缩放；有值班档才掷阶段 `chance`；每 tick 最多 1 次 `spawnRolled`。下界用主世界 `dayTime` |
 | 阶段时钟 | `SiegeDayClock` | 下界读主世界日晷；`inWindow` |
+| 原版难度 | `SiegeDifficulty` | 和平停刷；间隔倍率；简单/普通用放松解锁；装备掉落倍率 |
 
 选点细节（**BORDER 抽样 + 外扩**，不再全半径 / 全 owned 四邻接）：
 
-1. `PbsTerritoryAdapter.listSiegeTargets` → PBS `EntityPollList`（独立玩家 + 组织）。
+1. 自然刷新看**本维在线玩家**（旁观/死掉跳过），用 `resolvePollTargetForPlayer` 找到组织或本人；`/siege spawn` 仍从 PBS `EntityPollList` 抽样。
 2. 自然刷新与 `/siege spawn` 会跳过 `isTimeToBesiege=false` 的目标（组织看 owner）；`/siege spawn self` / `entity` 不挡。
 3. 无 OCCUPIED/BORDER 领土的目标跳过。
 4. `PlayerBlockStatusLib.queryTerritoryCentroid` → PBS 领土区块中心（交界向上取整）。
 5. `queryOrgTerritory(...).border()` 取所属 **BORDER**；随机抽最多 **4** 个（不足则全取；0 则无候选）。飞地边界被抽到是预期。
 6. 对每个采样 BORDER，在切比雪夫距离 **≤2** 内查找 `HOSTILE_BORDER`（约 O(4×5×5) 次状态查询），去重后按距领土中心排序，最多保留 **≤20**。**禁止**对大半径调用 `queryChunksInRadius`。
-7. 对每个候选独立 `random.nextFloat() < 0.15`；期望站点数 ≈ `candidates × 0.15`，**可以为 0**。
-8. 每个选中 anchor：找距离最近的占领/边界区块设为 `targetChunk`，生成后直接 `ASSAULT`。
+7. 对每个候选独立 `random.nextFloat() < 0.4`；期望站点数 ≈ `candidates × 0.4`，**可以为 0**。
+8. 每个选中 anchor：找距离最近的占领/边界区块设为 `targetChunk`，生成后直接 `ASSAULT`。围城怪刷在该区块地表 heightmap，不抽样洞穴。
 
 TODO（未实现）：加一个占领和边界的占比，来区分领土类型，改变集群类型和取边界区块数。
 
@@ -130,55 +134,67 @@ TODO（未实现）：加一个占领和边界的占比，来区分领土类型�
 | 旧 | 新 |
 |----|----|
 | 对全部 owned 四邻接收集 HOSTILE_BORDER / 大半径扫描 | 抽样 BORDER → 外扩切比雪夫 ≤2 找 HOSTILE_BORDER |
-| 候选中随机固定抽 2～3 站 | Bernoulli p=0.15，数量浮动（含 0） |
+| 候选中随机固定抽 2～3 站 | Bernoulli p=0.4，数量浮动（含 0） |
 | 集群先 `ASSEMBLE`，再从 4-邻接随机选 target | 生成时即设最近占领/边界并 `startAssaultOn` |
 | `/siege spawn` 随机 1 个目标 | 命令波次按 `TARGET_SAMPLE_RATIO`（默认 20%）抽样多个目标 |
-| 无自然触发 | 窗口内按节奏掷 chance，未中可再掷 |
+| 按轮询目标 + 阶段窗口掷 chance | 按在线玩家槽 + **类型值班窗口**掷 chance；间隔随原版难度 |
+| 地狱档挂在终末权重里 | 独立 `HellSpawnScheduler`；围城阶段表不再含 hell 权重 |
 | 配方仅 EntityType+权重 | 单位定义含盔甲/武器，刷怪时装备 |
+
+#### 地狱独立波次
+
+与围城抽签无关。每 **400 tick**（20 秒，不跟难度缩放）扫一次本维恶魔区块；本维至少有一个已过保护期、且阶段已到终末（钻石 + 恶魔格）的围城目标才开刷。每个恶魔格独立 Bernoulli `p=0.008`；该格已有未解散的地狱集群则跳过。抽中后 `rollHell` 只取地狱模板，锚在该恶魔格，进攻最近占领/边界，全服聊天坐标 + Seek 号角。
+
+地狱集群行为（`SiegeCluster.isHell()`）：
+
+- 票钉在**恶魔格**（锚点），不是进攻格。
+- 一直停在 ASSAULT：`tickHellAssault` 每 10 tick 扫锚点 7×7，进圈则全队锁定追击；绳长 128 格（相对恶魔格水平距离）。
+- 丢仇后先回家回满血再接回打断前的工作。
+- **`m≤2` 不解散**，只在全灭时解散。
+- IDLE 决策每次都先找人。
 
 #### 野外集群
 
-替代被关掉的原版 `MONSTER` 自然补员，**不是**自然围城调度的另一条排期。两条线共用 `END_WORLD_TICK`，互不读写对方的票 / `SavedData` / 冷却表。
+替代被关掉的原版 `MONSTER` 自然补员，**不是**自然围城调度的另一条排期。三条线共用 `END_WORLD_TICK`，互不读写对方的票 / `SavedData` / 冷却表。
 
 | 组件 | 文件 | 作用 |
 |------|------|------|
-| 常量 | `WildernessSpawnConfig` | 扫描 400 tick、失败 6000、距玩家 24–96；缺省 `attemptChance` 0.40 |
+| 常量 | `WildernessSpawnConfig` | 困难扫描 **4000 tick**（200 秒；普通 ×2、简单 ×3）、失败冷却 **6000**、距玩家 24–96；缺省 `attemptChance` 0.40 |
 | 调度 | `WildernessSpawnScheduler` | 主世界 / 下界 / 末地同一套：扫在线玩家 → 掷是否刷新 → `NATURAL` 抽格 |
-| 选点+刷怪 | `WildernessSpawner` | 仅 PBS `NATURAL`（排除占领与各类边界）；模板 `rollWilderness`（读 `fortress-besieged-wilderness.json`；地狱权重 0） |
-| 内存表 | `WildernessPackTracker` | 不进 `SiegeClusterSavedData`、不上区块票；卸载/死亡从内存摘掉；同一玩家可有多包 |
+| 选点+刷怪 | `WildernessSpawner` | 仅 PBS `NATURAL`；先试地表 heightmap，再最多 3 次柱内随机 Y（**可以刷进洞穴**）；模板 `rollWilderness`（地狱权重 0） |
+| 内存表 | `WildernessPackTracker` | 不进 `SiegeClusterSavedData`、不上区块票；卸载/死亡从内存摘掉；同一玩家可有多包；受击锁定追击，绳长同样 128 |
 | 不落盘 | `WildernessNoSaveMixin` | `shouldBeSaved=false`，区块卸载不把这批怪写回 |
 
 行为摘要：
 
-1. 先有玩家，才在其附近已加载区块上尝试。接管原版怪口之后：先掷本次是否刷新（`attemptChance`，默认 0.40），再抽格（只要 `NATURAL`，不要求够暗），最后读野外配置表抽档/种族/人数。
-2. 不碰 `OCCUPIED` / `BORDER` / `HOSTILE_BORDER` / `DEMON`。阶段 / 模板读 `config/fortress-besieged-wilderness.json`，与围城 json 独立。野外 `excludeHell=true` 把地狱档权重视为 0 再归一。下界同样走这套扫描，只抽烬军，路边仍可出；**不用**围城阶段时间窗，也不会在下界安静时段做全选。
-3. 保护期：`resolvePollTargetForPlayer`（PBS `queryPlayerOrganization`，否则玩家 UUID；再退回 poll 里 `queryOrganization.owner()` 匹配）→ `SiegePlayerProtection.isTimeToBesiege`（组织看 owner）。
+1. 先有玩家，才在其附近已加载区块上尝试。先掷本次是否刷新（`attemptChance`，默认 0.40），再抽格（只要 `NATURAL`，不要求够暗），最后读野外配置表抽档/种族/人数。
+2. 不碰 `OCCUPIED` / `BORDER` / `HOSTILE_BORDER` / `DEMON`。阶段 / 模板读 `config/fortress-besieged-wilderness.json`。野外 `excludeHell=true`。下界只抽烬军，路边仍可出；**不用**围城值班窗，也不会在下界安静时段做全选。
+3. 保护期：`resolvePollTargetForPlayer` → `SiegePlayerProtection.isTimeToBesiege`（组织看 owner）。
 4. AI 只追 `SiegeTargeting` 白名单；没人追就游荡。友伤 / `setTarget` mixin 把野外成员与围城单位同样拦住。本模组僵尸猪灵持久敌对；凋灵骷髅不掉头颅。
-5. **不** `setPersistenceRequired()`（围城那条才会设 true），走原版距离自然消失。无 7×7 票。
-6. **全维度**：每 20 秒扫一次、按野外 json 的 `attemptChance` 尝试；选点失败 5 分钟退避；成功不锁天、不因已有活包而停刷；每维每扫最多成功 1 次。
+5. **不** `setPersistenceRequired()`，走原版距离自然消失。无 7×7 票。
+6. **全维度**：按难度缩放的扫描间隔、40% 尝试；**选点失败才**退避 6000 tick（5 分钟）；成功不锁天、不因已有活包而停刷；每维每扫最多成功 1 次。掷 miss（没过 40%）不写失败冷却，等下一次扫描。
 
 ### 自然触发
 
-- 挂钩：`FortressBesieged` → `ServerTickEvents.END_WORLD_TICK` → `SiegeSpawnScheduler.onWorldTick`。下界调度读**主世界** `dayTime`（`SiegeDayClock`）；末地仍用自己的日晷。
+- 挂钩：`FortressBesieged` → `ServerTickEvents.END_WORLD_TICK` → `SiegeSpawnScheduler` + `HellSpawnScheduler` + `WildernessSpawnScheduler`。下界围城调度读**主世界** `dayTime`（`SiegeDayClock`）；末地仍用自己的日晷。
+- **原版难度**：和平直接 return。简单/普通/困难只改围城与野外的扫描间隔（×3 / ×2 / ×1），**不改**阶段 `chance`。困难基准围城间隔 2000 tick（100 秒）。
 - **阶段解锁**（sticky，主世界 `fortress_besieged_progression.dat`）：
-  - 故土 / `host`：进度 `minecraft:story/smelt_iron`（来硬的）。
-  - 困难 / `legion`：进度 `minecraft:story/mine_diamond`。
-  - 终末：已有钻石 **且** 本维有恶魔区块。旅途始终。
-  - 记在轮询目标 id（组织 UUID 或独立玩家 UUID）上，只升不降。组织：主人或任一成员有进度即解锁。
-  - JOIN 扫描在线玩家进度；`snapshot` 时再扫在线成员并把成员已有 sticky OR 到组织。`worldOwned` 只进日志，不挡阶段。旧配置 `hostUnlockWorldOwned` / `legionUnlockWorldOwned` 忽略。
-- **新玩家保护期**（默认 1 个主世界游戏日，`SiegeSpawnConfig.NEW_PLAYER_PROTECTION_DAYS`）：
-  - 每个**玩家**存 `daysInGame`（主世界 `dayTime/24000`）与 sticky `isTimeToBesiege`。首次 JOIN / 首次需要记录时 days=0、bool=false。退组织再入表、重复 APPENDED **不重置**。
-  - 主世界跨午夜（`DimensionDay.reset`，跳过该维度第一次见到以免读档 +1）对已记录玩家 `daysInGame++`；若 bool 仍为 false 且天数 ≥ 阈值则置 true。只跟主世界日走。
-  - 组织轮询条目用 `queryOrganization` → `owner()` 的 bool；创始人还在保护期内则组织也不会被自然围城。
-  - `refreshTargets` 对 `isTimeToBesiege==false` **不跟踪**（不掷 chance）。`/siege spawn` 抽样前同样过滤；`/siege spawn self` / `entity` 可强制刷。
-- **低频规划**（每 200 tick，或刚跨过午夜）：刷新 PBS poll；对已可围城的目标缓存当前阶段窗口。主世界用 `spawn`；下界用 `netherSpawn`（缺省整天）。不每 tick 对全 poll 打 PBS `snapshot()`。
-- **窗口**写在 `progression.stages[].spawn`（含 start、不含 end，end 不跨午夜）。缺省按阶段 id：旅途 `7000–18000` chance 0.25、故土 `10000–22000` 0.20、困难 `11000–19000` 0.15、终末 `16000–23000` 0.10；未知 id 退回旅途窗口。主世界窗口外不掷；窗口内可重复掷。
-- **下界权重**：落在主世界当前阶段窗口内用该阶段表；落在安静时段（窗口补集）则全选（已解锁阶段权重相加再归一）。围城（含 `/siege spawn` 在下界）路边权重为 0。野外不走这套窗口：全维度 40% 稀疏扫描，始终用当前阶段表，路边保留。
-- **不预抽到期时刻**：不哈希 `dueTime`。窗口开着就按 200 tick 节奏入队掷 `chance`。
-- **每 tick**：窗口内且已过该目标下次尝试时刻则入队；每 tick 最多对 1 个目标 `spawnRolled`。睡觉跳夜 / `/time set` 只要落在窗口内就会开始掷。
-- **开火**：再 `snapshot`/`resolveStage` 一次。不在窗口则跳过（不锁当天）。在窗口内先记下下次尝试时刻再掷该阶段（下界为 `netherSpawn`）`chance`（`nextFloat() < chance`）；未中、无领土、`spawnRolled` 失败都可以在间隔后再掷。站点仍是 Bernoulli `p=0.15`。
-- **主世界不是**把在场阶段权重归一成 1 再分配额（那只发生在下界安静时段全选）。也**不用** `TARGET_SAMPLE_RATIO` / `sampleWaveTargets`（那只给 `/siege spawn`）。
-- 成功刷出时聊天广播区块坐标与约略方块中心；同时播袭击号角（整波一次）。集群全灭或 `m≤2` 解散时播钟声 + 挑战完成音（`/siege disband` 不播）。
+  - 进度：`story/smelt_iron`（来硬的）、`story/obtain_armor`（整装上阵 / 任意铁甲）、`story/mine_diamond`。
+  - **困难**：旅途始终；故土要铁甲；军团要钻石；终末 = 钻石 + 本维恶魔区块。档位：路边始终、小股始终、一群要铁甲、军团要钻石、地狱只要本维有恶魔格（由独立调度开火）。
+  - **简单 / 普通**（放松解锁）：小股要铁；一群要钻石；军团要钻石 **且** 恶魔格（等于终末才出军团）。故土阶段仍看铁锭。
+  - 记在轮询目标 id 上，只升不降。组织：主人或任一成员有进度即解锁。
+  - JOIN 扫描在线玩家进度；`snapshot` 时再扫在线成员并把成员 sticky OR 到组织。`worldOwned` 只进日志。
+- **新玩家保护期**（默认 1 个主世界游戏日）：
+  - 每个**玩家**存 `daysInGame` 与 sticky `isTimeToBesiege`。首次 JOIN days=0、bool=false。退组织再入表、重复 APPENDED **不重置**。
+  - 主世界跨午夜对已记录玩家 `daysInGame++`；天数 ≥ 阈值则置 true。组织看 `owner()`。
+  - 保护中的 poll 目标不进自然槽、不进 `/siege spawn` 抽样；`self` / `entity` 可强制刷。
+- **玩家槽**（不是轮询目标一人一次）：本维每个可围城的在线玩家一个 `Slot`。同一组织多名成员在线时各自独立掷，每次开火仍走该组织的 `spawnRolled`（每 tick 每维预算仍为 1）。
+- **类型值班窗口**（主世界日晷，含 start、不含 end；地狱不走这张表）：路边 `7000–18000`、小股 `9000–23000`、一群 `10000–22000`、军团 `11000–19000`。自然调度只在**当前有已解锁且值班的档**时入队；抽档时把不当班的权重视为 0。阶段 json 里的 `spawn` 窗口**只提供 chance**，不再挡「能不能掷」。
+- **chance** 缺省：旅途 0.10、故土 0.12、困难 0.15、终末 0.20。下界 `netherSpawn` 默认整天，chance 与主世界该阶段相同。
+- **下界自然围城**：同样用值班窗 + 清零路边。命令 `/siege spawn` 在下界、且落在该阶段主世界窗口外时，仍做「已解锁阶段权重全选」。
+- **不预抽到期时刻**。规划/开火间隔 = `2000 × 难度倍率`。掷 miss、无领土、`spawnRolled` 失败都只等这个间隔，**没有**额外失败冷却。
+- 睡觉跳夜 / `/time set` 只要有值班档就会开始掷。
+- 成功刷出时只向所属玩家发聊天（「在「地区」的某方位生成了集群」）并在生成区块吹 Seek 号角。地狱波次改为全服聊天坐标。集群全灭或（非地狱）`m≤2` 解散时播钟声 + 挑战完成音；`/siege disband` 不播。解散一律打 INFO `[siege] disbanded`。
 
 ### PBS 集成（依赖 `player-block-status` ≥0.2.7）
 
@@ -216,21 +232,21 @@ TODO（未实现）：加一个占领和边界的占比，来区分领土类型�
 
 `FortressBesieged.java`：
 
-- `ServerPlayConnectionEvents.JOIN` → `SiegePlayerProtection.ensurePlayer`（建档，不重置）+ `SiegeProgressionFlags.onPlayerJoin`（扫描铁/钻石进度）
-- `ServerTickEvents.END_WORLD_TICK` → `SiegeClusterManager.tickLevel` + `SiegeSpawnScheduler.onWorldTick` + `WildernessSpawnScheduler.onWorldTick`
-- `ServerLivingEntityEvents.AFTER_DAMAGE` → FREE 阶段受击改追击
+- `ServerPlayConnectionEvents.JOIN` → `SiegePlayerProtection.ensurePlayer`（建档，不重置）+ `SiegeProgressionFlags.onPlayerJoin`（扫描铁/铁甲/钻石进度）
+- `ServerTickEvents.END_WORLD_TICK` → `SiegeClusterManager.tickLevel` + `SiegeSpawnScheduler` + `HellSpawnScheduler` + `WildernessSpawnScheduler`
+- `ServerLivingEntityEvents.AFTER_DAMAGE` → FREE 阶段受击改追击；围城/野外锁定仇恨
 - `ServerLivingEntityEvents.AFTER_DEATH` → 确认死亡后从单位表移除（未加载 ≠ 死亡）；野外成员同步从 `WildernessPackTracker` 摘掉
 - `ServerEntityEvents.ENTITY_LOAD` → 读档后把已进世界的怪重新 `SiegeAiHelper.install`
 - `ServerEntityEvents.ENTITY_UNLOAD` → 野外成员从内存表摘掉（它们不落盘，卸载即消失）
-- `ServerWorldEvents.LOAD` → 读 `SavedData`、恢复集群、按 `targetChunk` 重新上 7×7 票
-- `ServerWorldEvents.UNLOAD` / `SERVER_STOPPING` → 先把当前快照写入存档，再**摘会话票**并清内存；**不** `forceDisband`（避免把存档抹空）；同时清空野外内存表
+- `ServerWorldEvents.LOAD` → 读 `SavedData`、恢复集群、按 target/地狱锚点重新上 7×7 票
+- `ServerWorldEvents.UNLOAD` / `SERVER_STOPPING` → 先把当前快照写入存档，再**摘会话票**并清内存；**不** `forceDisband`（避免把存档抹空）；同时清空野外内存表与地狱扫描状态
 - `BEFORE_SAVE` → `syncSave`
 
 原版刷怪抑制（不改 `doMobSpawning`）：mixin 取消 `NaturalSpawner` 的 `MONSTER` 类别（含要塞烈焰人等结构 `spawn_overrides`）、`PhantomSpawner`、`VillageSiege`，以及 `EntitySpawnReason.REINFORCEMENT`。围城 `EVENT`、监守者 `TRIGGERED`、袭击、巡逻、刷怪笼、转化等仍可用。
 
 ### 7×7 临时区块票（不是 `/forceload`）
 
-集群活着时，以 `targetChunk`（尚无 target 则用 `anchorChunk`）为中心保持 **7×7 实体 tick**，玩家不在附近怪也继续拆/搭/走。
+集群活着时，围城以 `targetChunk`（尚无 target 则用 `anchorChunk`）为中心、地狱档以 **恶魔格锚点** 为中心，保持 **7×7 实体 tick**，玩家不在附近怪也继续拆/搭/走。
 
 | 项 | 实现 |
 |----|------|
@@ -252,6 +268,8 @@ TODO（未实现）：加一个占领和边界的占比，来区分领土类型�
 
 每个集群写入：UUID、维度、`state`、`anchorChunk` / `targetChunk`、模板 id/name/race/tier、单位（怪 UUID、mode、trackedBlock、chase ids、`firstTargetRollDone`）、FREE 用的 `attackTrackList` / `attackToUnits` / `globalPlayerMap`。**不**保存破块动作队列；加载后 DESTROY 单位按 trackedBlock 再规划。
 
+**尚未写入存档**（已确认要补，当前关服会丢）：`siegeTargetId`；单位 `lockedAggro` / `returningHome` / 恢复用的 mode 与 trackedBlock。读档后胜利音可能找不到所属；锁定追击会掉成普通 IDLE。
+
 加载：
 
 1. 维度就绪后读档，重建 `SiegeCluster` 并按 `targetChunk` 上 7×7 票。
@@ -264,9 +282,11 @@ TODO（未实现）：加一个占领和边界的占比，来区分领土类型�
 
 - 首次：找人概率 **1/3**（`firstTargetRollDone=false` → 决策后置 true）
 - 之后：找人概率 **1/30**
-- 未中或 AABB 无人 → 选 `targetChunk`（含 4-邻接）内距该怪最近的 PBS 可破块 → DESTROY
+- **地狱档**：每次决策都先找人（不掷 1/3、1/30）
+- 未中或 AABB 无人 → 选该怪所在区块 3×3 内距该怪最近的 PBS 可破块 → DESTROY
 - 仍无块 → 保持 IDLE（游荡）
 - ATTACK/DESTROY 目标失效或挖完 → IDLE 再决策
+- 受击或地狱预警会 `beginLockedAggro`：打断当前工作，追出 7×7 直到绳长 128；丢失后非地狱立刻接回，地狱先回家回血
 
 ### FREE 容量公式（仍用）
 
@@ -284,16 +304,16 @@ TODO（未实现）：加一个占领和边界的占比，来区分领土类型�
 以下为用户已拍板、且与当前代码基本一致的规则：
 
 1. **无补兵**：集群只循环，不生成新单位加入。
-2. **循环**：`ASSEMBLE → ASSAULT → FREE → ASSEMBLE …`；`m ≤ 2`（且非仅卡在 ASSEMBLE 等待）时解散。生成入口可直接 `ASSAULT`。
-3. **ASSEMBLE**（循环内）：只看锚点 **4-邻接** 的 `BORDER`/`OCCUPIED`，随机一个作进攻目标。
-4. **ASSAULT**：集群只维护 `targetChunk`；单位自行 IDLE→ATTACK/DESTROY；搜敌与追击都限制在中心 **7×7**；破块后单位回 IDLE；目标区块无（含邻接）可破块或非占领/边界 → FREE。
+2. **循环**：`ASSEMBLE → ASSAULT → FREE → ASSEMBLE …`；非地狱 `m ≤ 2`（且非仅卡在 ASSEMBLE 等待）时解散。生成入口可直接 `ASSAULT`。地狱档只在全灭时解散。
+3. **ASSEMBLE**（循环内）：只看锚点 **4-邻接** 的 `BORDER`/`OCCUPIED`，随机一个作进攻目标。地狱档不走这步。
+4. **ASSAULT**：集群只维护 `targetChunk`；单位自行 IDLE→ATTACK/DESTROY；搜敌与追击都限制在中心 **7×7**（锁定仇恨除外）；破块后单位回 IDLE；目标区块无（含邻接）可破块或非占领/边界 → FREE。地狱档留在 ASSAULT，用恶魔格预警圈拉锁定仇恨。
 5. **转 FREE**：
    - （1）`targetChunk`+邻接无可破 PBS 块；
    - （2）目标区块状态变为非 `OCCUPIED`/`BORDER`（每 tick 轮询）。
 6. **FREE**：中心 **7×7** 预分配；仅当攻击者仍在 7×7 内才因受击改追击；目标离开 7×7 → 放弃该目标并重分配（默认不回血；`healOnTargetLeaveZone=true` 才回满血）；中心 **3×3** 无敌对 → 全员 IDLE 回 `targetChunk`，到位后再集结。
-7. **IDLE** = 游荡；若在区外则 `SiegeIdleReturnGoal` 回 `targetChunk`。
-8. **敌对** = 对玩家友善的单位（白名单见上）。区外玩家即使在打怪，围城单位也不 `setTarget` / 还手。
-9. **发光**：入集群时无限久 Glowing；解散时清除。
+7. **IDLE** = 游荡；若在区外则 `SiegeIdleReturnGoal` 回 `getHomeChunk()`（地狱是恶魔格，其余是进攻格）。
+8. **敌对** = 对玩家友善的单位（白名单见上）。区外玩家即使在打怪，围城单位也不 `setTarget` / 还手（锁定仇恨除外）。
+9. **发光**：入集群时无限久 Glowing；解散时清除。解散打 INFO `[siege] disbanded`。
 
 ### 与规格的已知偏差（详见「存疑」）
 
@@ -324,10 +344,10 @@ TODO（未实现）：加一个占领和边界的占比，来区分领土类型�
 | 项 | 现状 |
 |----|------|
 | **日更/脏页注入** | ASSAULT 每 tick 轮询状态。 |
-| **持久化** | 维度 `SavedData`（`fortress_besieged_clusters.dat`）；保护期主世界 `fortress_besieged_player_protection.dat`；阶段解锁 `fortress_besieged_progression.dat`。关服/重进恢复集群并重绑 Goal。 |
+| **持久化** | 集群/保护期/阶段旗帜会落盘。`siegeTargetId` 与锁定仇恨快照尚未写入，关服会丢。 |
+| **阶段解锁** | 铁 / 铁甲 / 钻石 sticky + 本维恶魔区块；难度改变档位门槛；`worldOwned` 不挡阶段。 |
 | **配方外部配置** | 围城 `config/fortress-besieged-clusters.json`，野外 `config/fortress-besieged-wilderness.json`（各自含阶段表；缺则写默认）。旧 `default`/`light`/`heavy` 仍走围城表。编制见 [siege-cluster-templates.md](siege-cluster-templates.md)。 |
-| **围城单位友伤/怪物仇恨** | mixin 拦 `setTarget` / `hurtServer`：围城单位不打其他怪物，也不被怪物攻击拉仇恨。区外 7×7 的玩家友善目标同样拦 `setTarget`。 |
-| **阶段解锁** | 铁/钻石进度 sticky + 本维恶魔区块；`worldOwned` 不挡阶段。 |
+| **围城单位友伤/怪物仇恨** | mixin 拦 `setTarget` / `hurtServer`：围城单位不打其他怪物，也不被怪物攻击拉仇恨。区外 7×7 的玩家友善目标同样拦 `setTarget`（锁定仇恨除外）。 |
 | **测试** | 无自动化测试。 |
 | **OverCapacity AI** | 未实现。 |
 | **补兵** | 按设计不做。 |
@@ -358,12 +378,12 @@ TODO（未实现）：加一个占领和边界的占比，来区分领土类型�
 /siege disband
 ```
 
-- `sites`：确认 `center`、候选数、**E≈n×0.15**、本次 Bernoulli 选中站，以及各候选的 `nearestOwned`。
+- `sites`：确认 `center`、候选数、**E≈n×0.4**、本次 Bernoulli 选中站，以及各候选的 `nearestOwned`。
 - `spawn self`：对当前玩家领土跑完整链路（装备单位、初始 ASSAULT）。
 - `spawn`：按比例抽样多个**已可围城**目标（命令即时波次，不是自然调度）；仍在 1 日保护期内的不进抽样。
 - `spawn self` / `spawn entity`：OP 调试，可对保护中的目标强制刷。
-- 自然刷新：`isTimeToBesiege=true` 的目标在当前阶段窗口内按节奏掷 chance（可 `/time set` 到窗口内验证）；聊天广播成功刷出的集群。保护中的目标不掷。
-- 生成/状态机监控：logger 名 `fortress-besieged`。INFO 记抽中玩家、实际刷出集群、状态转换；DEBUG 记选点失败与各阶段耗时（把该 logger 设为 DEBUG，例如 `log4j2.xml`）。
+- 自然刷新：在线玩家槽在有值班档时按难度间隔掷 chance（可 `/time set` 到值班窗内验证）；聊天给所属玩家。地狱波次另扫恶魔格。保护中的不掷。
+- 生成/状态机监控：logger 名 `fortress-besieged`。INFO 记刷出集群、状态转换、**解散** `[siege] disbanded`；DEBUG 记选点失败与各阶段耗时。
 - `create`：仅遗留「收编附近怪」；正式玩法请用 `spawn`。
 
 ### 代码入口
@@ -372,7 +392,8 @@ TODO（未实现）：加一个占领和边界的占比，来区分领土类型�
 SiegeClusterSpawner.spawnForTarget(level, targetUuid, SiegeSpawnRecipes.getDefault(), random);
 SiegeSpawnSiteSelector.select(level, targetUuid, random);
 SiegeTargetSampler.sampleWaveTargets(server, level, random); // 仅命令波次
-SiegeSpawnScheduler.onWorldTick(level); // 自然：窗口内规划 + 机会队列 + 预算 1
+SiegeSpawnScheduler.onWorldTick(level); // 自然：玩家槽 + 值班窗 + 难度间隔 + 预算 1
+HellSpawnScheduler.onWorldTick(level);  // 地狱：恶魔格独立 Bernoulli
 SiegeClusterManager.createCluster(level, anchorChunk, mobList); // 底层
 ```
 
@@ -381,9 +402,9 @@ SiegeClusterManager.createCluster(level, anchorChunk, mobList); // 底层
 1. `spawn` 后在敌对边界站点出现带装备的持久化怪物，集群多为 `ASSAULT`（已设 target）；以 target 为中心 7×7 无玩家也会继续实体 tick。
 2. 可破块耗尽或区块不再占领/边界 → `FREE`。
 3. 目标跑出中心 7×7 → 停止追踪/还手并换目标（默认不回血）。
-4. 存活 ≤2 → 解散。
-5. 自然刷新在阶段窗口内掷中 chance 且选到站后，聊天出现 `[Siege] Cluster spawned ...`（每 tick 最多处理一个目标；未中下次节奏再掷）。
-6. 关服 / 退出单人 / 换维度再进：集群从 `fortress_besieged_clusters.dat` 恢复，怪重新安装围城 Goal；`/forceload query` 不应留下永久票。
+4. 非地狱存活 ≤2 → 解散（打 INFO `[siege] disbanded`）。地狱档只在全灭时解散。
+5. 自然刷新在值班窗内掷中 chance 且选到站后，所属玩家聊天出现「在「地区」的某方位生成了集群」（每 tick 最多处理一个玩家槽；未中下次间隔再掷）。
+6. 关服 / 退出单人 / 换维度再进：集群从 `fortress_besieged_clusters.dat` 恢复，怪重新安装围城 Goal；`/forceload query` 不应留下永久票。锁定仇恨与 `siegeTargetId` 目前不恢复。
 
 ---
 
@@ -421,6 +442,9 @@ src/main/java/luowei/fortress_besieged/
       SiegeTargetSampler.java
       SiegeClusterSpawner.java
       SiegeSpawnScheduler.java
+      HellSpawnScheduler.java
+      HellSpawnConfig.java
+      SiegeDifficulty.java
       SiegeDayClock.java
       SiegeProgression.java
       SiegeClusterConfig.java

@@ -3,7 +3,6 @@ package luowei.fortress_besieged.siege.spawn;
 import java.util.ArrayDeque;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
@@ -12,17 +11,22 @@ import java.util.UUID;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.Level;
 
 import luowei.fortress_besieged.siege.SiegePlayerProtection;
 import luowei.fortress_besieged.siege.pbs.PbsTerritoryAdapter;
 import luowei.fortress_besieged.siege.spawn.SiegeProgression.SpawnWindow;
 import luowei.fortress_besieged.siege.spawn.SiegeProgression.Stage;
+import luowei.fortress_besieged.siege.spawn.SiegeProgression.TierRoll;
+import luowei.fortress_besieged.siege.spawn.SiegeProgression.WorldSnapshot;
 
 /**
- * Natural siege: while a target is inside the stage window, roll {@code chance}
- * on a cadence. A miss does not lock the rest of the day. Command waves
- * ({@code /siege spawn}) bypass this clock.
+ * Natural siege: each online player in this dimension is one roll slot on a
+ * difficulty-scaled cadence (same stage {@code chance} as before). A hit looks
+ * up the player's org (or the player if solo) and runs the full spawn pipeline.
+ * Several members of one org can hit in the same cycle and each run is separate.
+ * Command waves ({@code /siege spawn}) still sample the PBS poll.
  */
 public final class SiegeSpawnScheduler {
 	private static final Map<ResourceKey<Level>, DimensionState> STATES = new HashMap<>();
@@ -43,137 +47,166 @@ public final class SiegeSpawnScheduler {
 			}
 			state.dayIndex = dayIndex;
 			state.dueQueue.clear();
-			for (Target target : state.targets.values()) {
-				target.queued = false;
+			for (Slot slot : state.slots.values()) {
+				slot.queued = false;
 			}
+		}
+		if (SiegeDifficulty.isPeaceful(level)) {
+			return;
 		}
 		long gameTime = level.getGameTime();
+		int interval = interval(level);
 		if (crossedMidnight
 				|| state.lastPlanGameTime < 0L
-				|| gameTime - state.lastPlanGameTime >= SiegeSpawnConfig.NATURAL_PLAN_INTERVAL_TICKS) {
-			refreshTargets(level, state);
+				|| gameTime - state.lastPlanGameTime >= interval) {
+			refreshSlots(level, state);
 			state.lastPlanGameTime = gameTime;
 		}
-		enqueueInWindow(state, timeOfDay, gameTime);
+		enqueueOnDuty(level, state, timeOfDay, gameTime);
 		int budget = SiegeSpawnConfig.NATURAL_SPAWN_BUDGET_PER_TICK;
 		for (int i = 0; i < budget; i++) {
-			UUID targetId = state.dueQueue.poll();
-			if (targetId == null) {
+			UUID playerId = state.dueQueue.poll();
+			if (playerId == null) {
 				break;
 			}
-			Target target = state.targets.get(targetId);
-			if (target == null) {
+			Slot slot = state.slots.get(playerId);
+			if (slot == null) {
 				continue;
 			}
-			target.queued = false;
-			fireTarget(level, target, timeOfDay, gameTime);
+			slot.queued = false;
+			fireSlot(level, slot, timeOfDay, gameTime);
 		}
 	}
 
+	private static int interval(ServerLevel level) {
+		return SiegeDifficulty.scaledInterval(
+				SiegeSpawnConfig.NATURAL_PLAN_INTERVAL_TICKS,
+				SiegeDifficulty.of(level));
+	}
+
 	/**
-	 * Refresh PBS poll. Protected targets are dropped. Window cache is only
-	 * used to decide eligibility; fire re-snapshots before rolling.
+	 * One slot per online player in this dimension. Protected poll targets are
+	 * dropped. Shared org snapshots are reused within a plan pass.
 	 */
-	private static void refreshTargets(ServerLevel level, DimensionState state) {
+	private static void refreshSlots(ServerLevel level, DimensionState state) {
 		long t0 = SiegeSpawnMonitor.nanos();
 		MinecraftServer server = level.getServer();
-		List<UUID> poll = PbsTerritoryAdapter.listSiegeTargets(server);
-		if (poll.isEmpty()) {
-			state.targets.clear();
-			SiegeSpawnMonitor.timing("plan", t0, "dim={} poll=0", SiegeSpawnMonitor.dim(level));
-			return;
-		}
 		SiegeProgression progression = SiegeClusterConfig.siege().progression();
 		Set<UUID> seen = new HashSet<>();
+		Map<UUID, WorldSnapshot> snapshots = new HashMap<>();
 		int skippedProtected = 0;
 		int tracked = 0;
-		for (UUID targetId : poll) {
-			seen.add(targetId);
-			if (!SiegePlayerProtection.isTimeToBesiege(server, targetId)) {
-				state.targets.remove(targetId);
+		for (ServerPlayer player : level.players()) {
+			if (player == null || player.isSpectator() || !player.isAlive()) {
+				continue;
+			}
+			UUID playerId = player.getUUID();
+			seen.add(playerId);
+			UUID pollTargetId = PbsTerritoryAdapter.resolvePollTargetForPlayer(server, playerId);
+			if (!SiegePlayerProtection.isTimeToBesiege(server, pollTargetId)) {
+				state.slots.remove(playerId);
 				skippedProtected++;
 				continue;
 			}
-			Stage stage = progression.resolveStage(progression.snapshot(level, targetId));
+			WorldSnapshot world = snapshots.computeIfAbsent(
+					pollTargetId,
+					id -> progression.snapshot(level, id));
+			Stage stage = progression.resolveStage(world);
 			SpawnWindow window = progression.dueWindow(level, stage);
-			Target target = state.targets.computeIfAbsent(targetId, Target::new);
-			target.stageId = stage.id();
-			target.windowStart = window.windowStart();
-			target.windowEnd = window.windowEnd();
-			target.chance = window.chance();
+			Slot slot = state.slots.computeIfAbsent(playerId, Slot::new);
+			slot.pollTargetId = pollTargetId;
+			slot.world = world;
+			slot.stageId = stage.id();
+			slot.chance = window.chance();
 			tracked++;
 		}
-		state.targets.keySet().removeIf(id -> !seen.contains(id));
+		state.slots.keySet().removeIf(id -> !seen.contains(id));
 		long ms = SiegeSpawnMonitor.msSince(t0);
 		if (ms >= SiegeSpawnMonitor.SLOW_CYCLE_MS) {
 			SiegeSpawnMonitor.warn(
-					"SLOW plan ms={} dim={} poll={} tracked={} skippedProtected={}",
-					ms, SiegeSpawnMonitor.dim(level), poll.size(), tracked, skippedProtected);
+					"SLOW plan ms={} dim={} online={} tracked={} skippedProtected={}",
+					ms, SiegeSpawnMonitor.dim(level), seen.size(), tracked, skippedProtected);
 		} else {
 			SiegeSpawnMonitor.timing(
 					"plan",
 					t0,
-					"dim={} poll={} tracked={} skippedProtected={}",
-					SiegeSpawnMonitor.dim(level), poll.size(), tracked, skippedProtected);
+					"dim={} online={} tracked={} skippedProtected={}",
+					SiegeSpawnMonitor.dim(level), seen.size(), tracked, skippedProtected);
 		}
 	}
 
-	private static void enqueueInWindow(DimensionState state, long timeOfDay, long gameTime) {
-		for (Target target : state.targets.values()) {
-			if (target.queued || gameTime < target.nextAttemptAt) {
+	private static void enqueueOnDuty(ServerLevel level, DimensionState state, long timeOfDay, long gameTime) {
+		SiegeProgression progression = SiegeClusterConfig.siege().progression();
+		for (Slot slot : state.slots.values()) {
+			if (slot.queued || gameTime < slot.nextAttemptAt) {
 				continue;
 			}
-			if (timeOfDay < target.windowStart || timeOfDay >= target.windowEnd) {
+			if (slot.world == null || slot.pollTargetId == null) {
 				continue;
 			}
-			state.dueQueue.add(target.targetId);
-			target.queued = true;
+			Stage stage = progression.resolveStage(slot.world);
+			TierRoll roll = TierRoll.of(level, stage, false, true);
+			if (!progression.hasOnDutyWeight(stage, slot.world, roll, timeOfDay)) {
+				continue;
+			}
+			state.dueQueue.add(slot.playerId);
+			slot.queued = true;
 		}
 	}
 
-	private static void fireTarget(ServerLevel level, Target target, long timeOfDay, long gameTime) {
+	private static void fireSlot(ServerLevel level, Slot slot, long timeOfDay, long gameTime) {
 		long t0 = SiegeSpawnMonitor.nanos();
 		MinecraftServer server = level.getServer();
-		if (!SiegePlayerProtection.isTimeToBesiege(server, target.targetId)) {
-			target.nextAttemptAt = gameTime + SiegeSpawnConfig.NATURAL_PLAN_INTERVAL_TICKS;
+		int interval = interval(level);
+		ServerPlayer player = server.getPlayerList().getPlayer(slot.playerId);
+		if (player == null || player.isSpectator() || !player.isAlive() || player.level() != level) {
+			slot.nextAttemptAt = gameTime + interval;
+			return;
+		}
+		UUID pollTargetId = PbsTerritoryAdapter.resolvePollTargetForPlayer(server, slot.playerId);
+		slot.pollTargetId = pollTargetId;
+		if (!SiegePlayerProtection.isTimeToBesiege(server, pollTargetId)) {
+			slot.nextAttemptAt = gameTime + interval;
 			return;
 		}
 		SiegeProgression progression = SiegeClusterConfig.siege().progression();
-		Stage current = progression.resolveStage(progression.snapshot(level, target.targetId));
+		WorldSnapshot world = progression.snapshot(level, pollTargetId);
+		Stage current = progression.resolveStage(world);
 		SpawnWindow window = progression.dueWindow(level, current);
-		target.stageId = current.id();
-		target.windowStart = window.windowStart();
-		target.windowEnd = window.windowEnd();
-		target.chance = window.chance();
-		String player = SiegeSpawnMonitor.target(level, target.targetId);
-		if (!SiegeDayClock.inWindow(window, timeOfDay)) {
+		slot.world = world;
+		slot.stageId = current.id();
+		slot.chance = window.chance();
+		String name = SiegeSpawnMonitor.target(level, slot.playerId);
+		String org = SiegeSpawnMonitor.target(level, pollTargetId);
+		TierRoll roll = TierRoll.of(level, current, false, true);
+		if (!progression.hasOnDutyWeight(current, world, roll, timeOfDay)) {
 			SiegeSpawnMonitor.debug(
-					"skip player={} stage={} outside window timeOfDay={} dim={}",
-					player, current.id(), timeOfDay, SiegeSpawnMonitor.dim(level));
+					"skip player={} org={} stage={} no on-duty tier timeOfDay={} dim={}",
+					name, org, current.id(), timeOfDay, SiegeSpawnMonitor.dim(level));
 			return;
 		}
 
-		target.nextAttemptAt = gameTime + SiegeSpawnConfig.NATURAL_PLAN_INTERVAL_TICKS;
+		slot.nextAttemptAt = gameTime + interval;
 		SiegeSpawnMonitor.debug(
-				"picked player={} stage={} timeOfDay={} gameTime={} dim={} source=natural",
-				player, current.id(), timeOfDay, gameTime, SiegeSpawnMonitor.dim(level));
+				"picked player={} org={} stage={} timeOfDay={} gameTime={} dim={} source=natural",
+				name, org, current.id(), timeOfDay, gameTime, SiegeSpawnMonitor.dim(level));
 
 		Random random = new Random(level.random.nextLong());
 		if (!(random.nextFloat() < window.chance())) {
 			SiegeSpawnMonitor.debug(
-					"chance miss player={} stage={} chance={} timeOfDay={} dim={}",
-					player, current.id(), window.chance(), timeOfDay, SiegeSpawnMonitor.dim(level));
-			SiegeSpawnMonitor.timing("fire", t0, "player={} result=chance_miss", player);
+					"chance miss player={} org={} stage={} chance={} timeOfDay={} dim={}",
+					name, org, current.id(), window.chance(), timeOfDay, SiegeSpawnMonitor.dim(level));
+			SiegeSpawnMonitor.timing("fire", t0, "player={} result=chance_miss", name);
 			return;
 		}
 
 		SiegeClusterSpawner.SpawnResult result =
-				SiegeClusterSpawner.spawnRolled(level, target.targetId, random);
+				SiegeClusterSpawner.spawnRolled(level, pollTargetId, random, true);
 		SiegeSpawnMonitor.timing(
 				"fire",
 				t0,
-				"player={} clusters={} source=natural",
-				player, result.clusters().size());
+				"player={} org={} clusters={} source=natural",
+				name, org, result.clusters().size());
 	}
 
 	public static void clearDebounce() {
@@ -183,21 +216,21 @@ public final class SiegeSpawnScheduler {
 	private static final class DimensionState {
 		long dayIndex = Long.MIN_VALUE;
 		long lastPlanGameTime = -1L;
-		final Map<UUID, Target> targets = new HashMap<>();
+		final Map<UUID, Slot> slots = new HashMap<>();
 		final ArrayDeque<UUID> dueQueue = new ArrayDeque<>();
 	}
 
-	private static final class Target {
-		final UUID targetId;
+	private static final class Slot {
+		final UUID playerId;
+		UUID pollTargetId;
+		WorldSnapshot world;
 		String stageId;
-		int windowStart;
-		int windowEnd;
 		float chance;
 		boolean queued;
 		long nextAttemptAt;
 
-		Target(UUID targetId) {
-			this.targetId = targetId;
+		Slot(UUID playerId) {
+			this.playerId = playerId;
 		}
 	}
 }

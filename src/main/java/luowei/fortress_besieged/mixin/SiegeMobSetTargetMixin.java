@@ -14,7 +14,8 @@ import luowei.fortress_besieged.siege.spawn.WildernessPackTracker;
 import luowei.fortress_besieged.siege.targeting.SiegeTargeting;
 
 /**
- * 围城单位只打玩家友善目标，且目标必须在集群中心 7×7 内；区外 setTarget 直接取消。
+ * 围城单位只打玩家友善目标，且目标必须在集群中心 7×7 内；
+ * 锁定仇恨（受击打断 / 地狱预警）允许追出 7×7。
  */
 @Mixin(Mob.class)
 public class SiegeMobSetTargetMixin {
@@ -30,7 +31,10 @@ public class SiegeMobSetTargetMixin {
 			return;
 		}
 		if (cluster != null && !cluster.isInChaseZone(target)) {
-			ci.cancel();
+			var record = cluster.getUnit(self);
+			if (record == null || !record.hasLockedAggro()) {
+				ci.cancel();
+			}
 		}
 	}
 }

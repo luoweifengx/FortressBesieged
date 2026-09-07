@@ -45,9 +45,17 @@ public final class SiegeClusterSpawner {
 
 	/** Natural wave / {@code /siege spawn}: roll stage → tier → template. */
 	public static SpawnResult spawnRolled(ServerLevel level, UUID targetId, Random random) {
+		return spawnRolled(level, targetId, random, false);
+	}
+
+	/**
+	 * @param naturalDutyWindows true for the scheduler: only cluster types whose
+	 *        duty window is open. Commands pass false.
+	 */
+	public static SpawnResult spawnRolled(ServerLevel level, UUID targetId, Random random, boolean naturalDutyWindows) {
 		long t0 = SiegeSpawnMonitor.nanos();
 		long tTpl = SiegeSpawnMonitor.nanos();
-		SiegeTemplateSelector.Selection selection = SiegeTemplateSelector.roll(level, targetId, random);
+		SiegeTemplateSelector.Selection selection = SiegeTemplateSelector.roll(level, targetId, random, naturalDutyWindows);
 		logTemplateTiming(tTpl, selection);
 		return spawnSelection(level, targetId, selection, random, t0);
 	}
@@ -212,7 +220,7 @@ public final class SiegeClusterSpawner {
 				cycleStart,
 				"player={} clusters={} dim={} gameTime={} template={}",
 				player, created.size(), SiegeSpawnMonitor.dim(level), level.getGameTime(), template.id());
-		SiegeSounds.playInvasionHorn(level, targetId, created);
+		SiegeSounds.playInvasionHorn(level, targetId, sites.territoryCenter(), created);
 		return result;
 	}
 
@@ -328,7 +336,7 @@ public final class SiegeClusterSpawner {
 				t0,
 				"player={} clusters={} dim={} gameTime={} template={}",
 				player, created.size(), SiegeSpawnMonitor.dim(level), level.getGameTime(), recipe.id());
-		SiegeSounds.playInvasionHorn(level, targetId, created);
+		SiegeSounds.playInvasionHorn(level, targetId, sites.territoryCenter(), created);
 		return result;
 	}
 

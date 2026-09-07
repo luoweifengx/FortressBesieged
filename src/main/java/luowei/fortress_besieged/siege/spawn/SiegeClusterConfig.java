@@ -222,7 +222,7 @@ public final class SiegeClusterConfig {
 			loggedLegacyUnlockKeys = true;
 			FortressBesieged.LOGGER.info(
 					"[siege cluster] ignoring hostUnlockWorldOwned/legionUnlockWorldOwned; "
-							+ "stages unlock by iron/diamond advancements");
+							+ "stages unlock by iron / iron-armor / diamond advancements");
 		}
 		SiegeProgression fallback = wilderness
 				? SiegeClusterDefaults.wildernessProgression()

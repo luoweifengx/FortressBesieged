@@ -9,7 +9,6 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.Difficulty;
 import net.minecraft.world.level.Level;
 
 import luowei.fortress_besieged.FortressBesieged;
@@ -28,7 +27,7 @@ public final class WildernessSpawnScheduler {
 	}
 
 	public static void onWorldTick(ServerLevel level) {
-		if (level.getDifficulty() == Difficulty.PEACEFUL) {
+		if (SiegeDifficulty.isPeaceful(level)) {
 			return;
 		}
 		WildernessPackTracker.pruneLevel(level);
@@ -38,7 +37,10 @@ public final class WildernessSpawnScheduler {
 	private static void scanSparse(ServerLevel level) {
 		long gameTime = level.getGameTime();
 		long last = LAST_SCAN.getOrDefault(level.dimension(), Long.MIN_VALUE);
-		if (last != Long.MIN_VALUE && gameTime - last < WildernessSpawnConfig.SCAN_INTERVAL_TICKS) {
+		int scanInterval = SiegeDifficulty.scaledInterval(
+				WildernessSpawnConfig.SCAN_INTERVAL_TICKS,
+				SiegeDifficulty.of(level));
+		if (last != Long.MIN_VALUE && gameTime - last < scanInterval) {
 			return;
 		}
 		LAST_SCAN.put(level.dimension(), gameTime);

@@ -7,9 +7,9 @@ package luowei.fortress_besieged.siege.spawn;
 public final class WildernessSpawnConfig {
 	/**
 	 * How often (world game-time ticks) to scan online players for a spawn attempt.
-	 * 400 = 20 seconds.
+	 * 4000 = 200 seconds on Hard; Normal ×2, Easy ×3.
 	 */
-	public static final int SCAN_INTERVAL_TICKS = 400;
+	public static final int SCAN_INTERVAL_TICKS = 4000;
 
 	/**
 	 * Default Bernoulli chance written as {@code attemptChance} in

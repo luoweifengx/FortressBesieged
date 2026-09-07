@@ -10,9 +10,12 @@ import java.util.Random;
 import java.util.Set;
 import java.util.UUID;
 
+import com.mojang.authlib.GameProfile;
+
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.state.BlockState;
 
@@ -111,6 +114,35 @@ public final class PbsTerritoryAdapter {
 			}
 		}
 		return List.copyOf(ids);
+	}
+
+	/**
+	 * Chat / horn region label: organization {@code name()}, else solo player profile name.
+	 */
+	public static String regionDisplayName(MinecraftServer server, UUID pollTargetId) {
+		if (pollTargetId == null) {
+			return "未知地区";
+		}
+		if (server != null) {
+			var org = PlayerBlockStatusLib.queryOrganization(server, pollTargetId);
+			if (org.isPresent()) {
+				String name = org.get().name();
+				if (name != null && !name.isBlank()) {
+					return name;
+				}
+			}
+			ServerPlayer online = server.getPlayerList().getPlayer(pollTargetId);
+			if (online != null) {
+				return online.getGameProfile().getName();
+			}
+			String cached = server.getProfileCache().get(pollTargetId)
+					.map(GameProfile::getName)
+					.orElse(null);
+			if (cached != null && !cached.isBlank()) {
+				return cached;
+			}
+		}
+		return pollTargetId.toString();
 	}
 
 	/** 实体轮询列表对象（含 size / indexOf 等）。 */

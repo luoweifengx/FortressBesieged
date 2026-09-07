@@ -9,13 +9,16 @@ import java.util.UUID;
 
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.Difficulty;
 
 import luowei.fortress_besieged.siege.SiegeProgressionFlags;
 import luowei.fortress_besieged.siege.pbs.PbsTerritoryAdapter;
 
 /**
- * World stage + tier unlock from iron/diamond advancements and demon chunks.
+ * World stage + tier unlock from advancements and demon chunks.
  * {@code worldOwned} is informational only and does not gate stages.
+ * Natural siege filters tiers by type duty windows; stage {@code spawn} windows
+ * supply chance only.
  */
 public final class SiegeProgression {
 	public static final String TIER_ROADKILL = "roadkill";
@@ -46,8 +49,9 @@ public final class SiegeProgression {
 		MinecraftServer server = level.getServer();
 		SiegeProgressionFlags.refresh(server, targetId);
 		boolean iron = SiegeProgressionFlags.hasIron(server, targetId);
+		boolean ironArmor = SiegeProgressionFlags.hasIronArmor(server, targetId);
 		boolean diamond = SiegeProgressionFlags.hasDiamond(server, targetId);
-		return new WorldSnapshot(owned, demon, iron, diamond);
+		return new WorldSnapshot(owned, demon, iron, ironArmor, diamond, SiegeDifficulty.of(level));
 	}
 
 	/**
@@ -77,7 +81,7 @@ public final class SiegeProgression {
 			return false;
 		}
 		return switch (stage.unlock() == null ? UNLOCK_ALWAYS : stage.unlock()) {
-			case UNLOCK_HOST -> world.hostUnlocked();
+			case UNLOCK_HOST -> world.hostStageUnlocked();
 			case UNLOCK_LEGION -> world.legionUnlocked();
 			default -> true;
 		};
@@ -87,18 +91,71 @@ public final class SiegeProgression {
 		if (tier == null) {
 			return false;
 		}
+		Difficulty difficulty = world == null ? Difficulty.HARD : world.difficulty();
+		boolean relaxed = SiegeDifficulty.usesRelaxedUnlocks(difficulty);
 		return switch (tier) {
-			case TIER_ROADKILL, TIER_SMALL -> true;
-			case TIER_HOST -> world.hostUnlocked();
-			case TIER_LEGION -> world.legionUnlocked();
+			case TIER_ROADKILL -> true;
+			case TIER_SMALL -> !relaxed || world.hasIron();
+			case TIER_HOST -> SiegeDifficulty.isHard(difficulty)
+					? world.hasIronArmor()
+					: world.hasDiamond();
+			case TIER_LEGION -> SiegeDifficulty.isHard(difficulty)
+					? world.hasDiamond()
+					: world.hasDiamond() && world.hasDemonChunk();
 			case TIER_HELL -> world.hasDemonChunk();
 			default -> false;
 		};
 	}
 
 	/**
+	 * Cluster-type duty window (overworld clock). Hell is not gated here.
+	 */
+	public static SpawnWindow dutyWindow(String tier) {
+		if (tier == null) {
+			return null;
+		}
+		return switch (tier) {
+			case TIER_ROADKILL -> new SpawnWindow(7000, 18000, 1.0f);
+			case TIER_SMALL -> new SpawnWindow(9000, 23000, 1.0f);
+			case TIER_HOST -> new SpawnWindow(10000, 22000, 1.0f);
+			case TIER_LEGION -> new SpawnWindow(11000, 19000, 1.0f);
+			default -> null;
+		};
+	}
+
+	public static boolean tierOnDuty(String tier, long timeOfDay) {
+		SpawnWindow window = dutyWindow(tier);
+		if (window == null) {
+			return true;
+		}
+		return SiegeDayClock.inWindow(window, timeOfDay);
+	}
+
+	public boolean hasOnDutyWeight(Stage stage, WorldSnapshot world, TierRoll roll, long timeOfDay) {
+		if (roll == null) {
+			roll = TierRoll.overworldSiege();
+		}
+		Map<String, Double> weights;
+		if (roll.mergeUnlocked()) {
+			weights = mergeUnlockedWeights(world);
+		} else if (stage == null || stage.weights().isEmpty()) {
+			weights = Map.of(TIER_SMALL, 1.0D);
+		} else {
+			weights = stage.weights();
+		}
+		for (Map.Entry<String, Double> entry : weights.entrySet()) {
+			double w = entry.getValue() == null ? 0.0D : entry.getValue();
+			if (w > 0.0D && keepTier(entry.getKey(), world, roll, timeOfDay)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
 	 * Eligibility window for natural rolls: overworld uses {@code spawn};
-	 * nether uses {@code netherSpawn} (default all day).
+	 * nether uses {@code netherSpawn} (default all day). Chance is read from this;
+	 * type duty windows decide which tiers may appear.
 	 */
 	public SpawnWindow dueWindow(ServerLevel level, Stage stage) {
 		if (stage == null) {
@@ -115,7 +172,7 @@ public final class SiegeProgression {
 	 * Illager has no roadkill: caller remaps after race is known, or pass {@code remapRoadkillToSmall}.
 	 */
 	public String rollTier(Stage stage, WorldSnapshot world, Random random, boolean remapRoadkillToSmall) {
-		return rollTier(stage, world, random, remapRoadkillToSmall, TierRoll.overworldSiege());
+		return rollTier(stage, world, random, remapRoadkillToSmall, TierRoll.overworldSiege(), 0L);
 	}
 
 	/**
@@ -128,7 +185,7 @@ public final class SiegeProgression {
 			boolean remapRoadkillToSmall,
 			boolean excludeHell
 	) {
-		return rollTier(stage, world, random, remapRoadkillToSmall, new TierRoll(excludeHell, false, false));
+		return rollTier(stage, world, random, remapRoadkillToSmall, new TierRoll(excludeHell, false, false, false), 0L);
 	}
 
 	public String rollTier(
@@ -137,6 +194,17 @@ public final class SiegeProgression {
 			Random random,
 			boolean remapRoadkillToSmall,
 			TierRoll roll
+	) {
+		return rollTier(stage, world, random, remapRoadkillToSmall, roll, 0L);
+	}
+
+	public String rollTier(
+			Stage stage,
+			WorldSnapshot world,
+			Random random,
+			boolean remapRoadkillToSmall,
+			TierRoll roll,
+			long timeOfDay
 	) {
 		if (roll == null) {
 			roll = TierRoll.overworldSiege();
@@ -153,7 +221,7 @@ public final class SiegeProgression {
 		String tier = WeightedPicker.pickProbability(
 				weights,
 				random,
-				t -> keepTier(t, world, keep));
+				t -> keepTier(t, world, keep, timeOfDay));
 		if (tier == null) {
 			tier = TIER_SMALL;
 		}
@@ -209,18 +277,18 @@ public final class SiegeProgression {
 	}
 
 	/**
-	 * Default natural-spawn window/chance by stage id.
-	 * Unknown ids fall back to the journey window.
+	 * Default natural-spawn chance by stage id. Window times are unused by the
+	 * natural scheduler (type duty windows are used instead) but kept as JSON defaults.
 	 */
 	public static SpawnWindow defaultSpawnWindow(String stageId) {
 		if (stageId == null) {
 			stageId = "journey";
 		}
 		return switch (stageId) {
-			case "homeland" -> new SpawnWindow(10000, 22000, 0.20f);
+			case "homeland" -> new SpawnWindow(10000, 22000, 0.12f);
 			case "hard" -> new SpawnWindow(11000, 19000, 0.15f);
-			case "end" -> new SpawnWindow(16000, 23000, 0.10f);
-			default -> new SpawnWindow(7000, 18000, 0.25f);
+			case "end" -> new SpawnWindow(16000, 23000, 0.20f);
+			default -> new SpawnWindow(7000, 18000, 0.10f);
 		};
 	}
 
@@ -228,11 +296,14 @@ public final class SiegeProgression {
 		return SiegeDayClock.defaultNetherDueWindow(chance);
 	}
 
-	private boolean keepTier(String tier, WorldSnapshot world, TierRoll roll) {
+	private boolean keepTier(String tier, WorldSnapshot world, TierRoll roll, long timeOfDay) {
 		if (roll.excludeHell() && TIER_HELL.equals(tier)) {
 			return false;
 		}
 		if (roll.excludeRoadkill() && TIER_ROADKILL.equals(tier)) {
+			return false;
+		}
+		if (roll.applyDutyWindows() && !tierOnDuty(tier, timeOfDay)) {
 			return false;
 		}
 		return tierUnlocked(tier, world);
@@ -282,19 +353,27 @@ public final class SiegeProgression {
 	 * @param excludeHell wilderness: hell weight 0
 	 * @param excludeRoadkill nether HOSTILE_BORDER / siege: roadkill weight 0
 	 * @param mergeUnlocked nether off-hours 全选: sum unlocked stage weights then renormalize
+	 * @param applyDutyWindows natural siege: keep only cluster types whose duty window is open
 	 */
-	public record TierRoll(boolean excludeHell, boolean excludeRoadkill, boolean mergeUnlocked) {
+	public record TierRoll(boolean excludeHell, boolean excludeRoadkill, boolean mergeUnlocked, boolean applyDutyWindows) {
 		public static TierRoll overworldSiege() {
-			return new TierRoll(false, false, false);
+			return new TierRoll(false, false, false, false);
 		}
 
 		public static TierRoll of(ServerLevel level, Stage stage, boolean wilderness) {
+			return of(level, stage, wilderness, false);
+		}
+
+		public static TierRoll of(ServerLevel level, Stage stage, boolean wilderness, boolean dutyWindows) {
 			if (wilderness) {
-				return new TierRoll(true, false, false);
+				return new TierRoll(true, false, false, false);
 			}
 			boolean nether = SiegeDayClock.isNether(level);
+			if (dutyWindows) {
+				return new TierRoll(false, nether, false, true);
+			}
 			boolean inHours = stage != null && SiegeDayClock.inWindow(stage.spawn(), SiegeDayClock.timeOfDay(level));
-			return new TierRoll(false, nether, nether && !inHours);
+			return new TierRoll(false, nether, nether && !inHours, false);
 		}
 	}
 
@@ -335,8 +414,22 @@ public final class SiegeProgression {
 	public record WorldSnapshot(
 			int worldOwned,
 			boolean hasDemonChunk,
-			boolean hostUnlocked,
-			boolean legionUnlocked
+			boolean hasIron,
+			boolean hasIronArmor,
+			boolean hasDiamond,
+			Difficulty difficulty
 	) {
+		/** 故土阶段：困难看铁甲，其余看铁锭. */
+		public boolean hostStageUnlocked() {
+			return SiegeDifficulty.isHard(difficulty) ? hasIronArmor : hasIron;
+		}
+
+		public boolean hostUnlocked() {
+			return hostStageUnlocked();
+		}
+
+		public boolean legionUnlocked() {
+			return hasDiamond;
+		}
 	}
 }

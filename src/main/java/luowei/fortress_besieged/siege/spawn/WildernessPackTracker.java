@@ -12,10 +12,12 @@ import java.util.UUID;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.level.Level;
 
 import luowei.fortress_besieged.siege.goal.SiegeAiHelper;
+import luowei.fortress_besieged.siege.targeting.SiegeTargeting;
 
 /**
  * In-memory wilderness packs. Not SavedData, not chunk tickets.
@@ -25,6 +27,7 @@ public final class WildernessPackTracker {
 	private static final Map<UUID, Pack> PACKS = new HashMap<>();
 	private static final Map<UUID, UUID> MOB_TO_PACK = new HashMap<>();
 	private static final Map<UUID, Set<UUID>> PLAYER_TO_PACKS = new HashMap<>();
+	private static final Map<UUID, UUID> FORCED_TARGET = new HashMap<>();
 
 	private WildernessPackTracker() {
 	}
@@ -84,6 +87,7 @@ public final class WildernessPackTracker {
 		if (mobId == null) {
 			return;
 		}
+		FORCED_TARGET.remove(mobId);
 		UUID packId = MOB_TO_PACK.remove(mobId);
 		if (packId == null) {
 			return;
@@ -147,6 +151,7 @@ public final class WildernessPackTracker {
 			}
 			for (UUID mobId : pack.members) {
 				MOB_TO_PACK.remove(mobId);
+				FORCED_TARGET.remove(mobId);
 				SiegeAiHelper.discardVanillaBackup(mobId);
 			}
 			unbindPlayerPack(pack.playerId, pack.id);
@@ -161,6 +166,48 @@ public final class WildernessPackTracker {
 		PACKS.clear();
 		MOB_TO_PACK.clear();
 		PLAYER_TO_PACKS.clear();
+		FORCED_TARGET.clear();
+	}
+
+	/** 受击强打断：记下攻击者，野外追击 Goal 优先打这个人。 */
+	public static void onMobDamaged(Mob mob, Entity attacker) {
+		if (mob == null || !isMember(mob)) {
+			return;
+		}
+		if (!(attacker instanceof LivingEntity living) || !SiegeTargeting.isValidAttackTarget(living)) {
+			return;
+		}
+		if (living.level() != mob.level()) {
+			return;
+		}
+		FORCED_TARGET.put(mob.getUUID(), living.getUUID());
+		mob.setTarget(living);
+	}
+
+	public static LivingEntity resolveForcedTarget(Mob mob) {
+		if (mob == null || !(mob.level() instanceof ServerLevel level)) {
+			return null;
+		}
+		UUID id = FORCED_TARGET.get(mob.getUUID());
+		if (id == null) {
+			return null;
+		}
+		Entity entity = level.getEntity(id);
+		if (entity instanceof LivingEntity living && living.isAlive() && SiegeTargeting.isValidAttackTarget(living)) {
+			if (mob.distanceToSqr(living) > HellSpawnConfig.AGGRO_LEASH_BLOCKS * HellSpawnConfig.AGGRO_LEASH_BLOCKS) {
+				FORCED_TARGET.remove(mob.getUUID());
+				return null;
+			}
+			return living;
+		}
+		FORCED_TARGET.remove(mob.getUUID());
+		return null;
+	}
+
+	public static void clearForcedTarget(UUID mobId) {
+		if (mobId != null) {
+			FORCED_TARGET.remove(mobId);
+		}
 	}
 
 	private static void unbindPlayerPack(UUID playerId, UUID packId) {

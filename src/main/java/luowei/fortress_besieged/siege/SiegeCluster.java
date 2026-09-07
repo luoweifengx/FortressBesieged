@@ -26,6 +26,8 @@ import luowei.fortress_besieged.siege.SiegeClusterSavedData.UnitSnapshot;
 import luowei.fortress_besieged.siege.goal.SiegeAiHelper;
 import luowei.fortress_besieged.siege.goal.SiegeTargetDecision;
 import luowei.fortress_besieged.siege.pbs.PbsTerritoryAdapter;
+import luowei.fortress_besieged.siege.spawn.HellSpawnConfig;
+import luowei.fortress_besieged.siege.spawn.SiegeProgression;
 import luowei.fortress_besieged.siege.spawn.SiegeSpawnMonitor;
 import luowei.fortress_besieged.siege.targeting.SiegeTargeting;
 import luowei.player_block_status.lib.chunk.ChunkState;
@@ -70,7 +72,7 @@ public final class SiegeCluster {
 	private String templateName;
 	private String race;
 	private String tier;
-	/** Poll target (org or solo player) this cluster was spawned against; not persisted. */
+	/** Poll target (org or solo player) this cluster was spawned against. Not in SavedData yet. */
 	private UUID siegeTargetId;
 
 	public SiegeCluster(ServerLevel level, ChunkPos anchorChunk, List<Mob> mobs) {
@@ -164,6 +166,18 @@ public final class SiegeCluster {
 		this.siegeTargetId = siegeTargetId;
 	}
 
+	public boolean isHell() {
+		return SiegeProgression.TIER_HELL.equals(tier);
+	}
+
+	/** 闲时回家的区块：地狱档是刷出时的恶魔格，其余是进攻格。 */
+	public ChunkPos getHomeChunk() {
+		if (isHell() && anchorChunk != null) {
+			return anchorChunk;
+		}
+		return targetChunk != null ? targetChunk : anchorChunk;
+	}
+
 	public String describeTemplate() {
 		if (templateId == null) {
 			return "unspecified";
@@ -218,7 +232,7 @@ public final class SiegeCluster {
 			return;
 		}
 		SiegeUnitRecord record = units.get(mob.getUUID());
-		if (record == null) {
+		if (record == null || record.hasLockedAggro() || record.isReturningHome()) {
 			return;
 		}
 		record.returnToIdle();
@@ -233,10 +247,36 @@ public final class SiegeCluster {
 			return null;
 		}
 		Entity entity = serverLevel.getEntity(record.getCurrentChaseId());
-		if (entity instanceof LivingEntity living && living.isAlive() && isInChaseZone(living)) {
+		if (!(entity instanceof LivingEntity living) || !living.isAlive()) {
+			return null;
+		}
+		if (record.hasLockedAggro()) {
+			Mob mob = resolveMob(record.getMobId());
+			return isWithinAggroLeash(mob, living) ? living : null;
+		}
+		if (isInChaseZone(living)) {
 			return living;
 		}
 		return null;
+	}
+
+	/** 锁定仇恨绳长：地狱档相对恶魔格水平距离，其余相对追击者。 */
+	public boolean isWithinAggroLeash(Mob mob, LivingEntity target) {
+		if (target == null) {
+			return false;
+		}
+		double max = HellSpawnConfig.AGGRO_LEASH_BLOCKS;
+		double maxSq = max * max;
+		if (isHell()) {
+			ChunkPos home = anchorChunk;
+			if (home == null) {
+				return false;
+			}
+			double dx = target.getX() - (home.getMiddleBlockX() + 0.5D);
+			double dz = target.getZ() - (home.getMiddleBlockZ() + 0.5D);
+			return dx * dx + dz * dz <= maxSq;
+		}
+		return mob != null && mob.distanceToSqr(target) <= maxSq;
 	}
 
 	/** 追击中心：有进攻区块用 {@code targetChunk}，否则锚点。 */
@@ -246,14 +286,23 @@ public final class SiegeCluster {
 
 	/**
 	 * 目标是否在追击中心的 7×7（切比雪夫 ≤ {@link #FREE_CHASE_RADIUS}）内。
-	 * 区外不追、不还手。
+	 * 区外不追、不还手（锁定仇恨除外）。
 	 */
 	public boolean isInChaseZone(Entity entity) {
-		ChunkPos center = getChaseCenter();
+		return isInChunkRing(entity, getChaseCenter(), FREE_CHASE_RADIUS);
+	}
+
+	/** 预警圈：地狱档以恶魔格为中心，其余与追击圈相同。 */
+	public boolean isInWarningZone(Entity entity) {
+		ChunkPos center = isHell() ? anchorChunk : getChaseCenter();
+		return isInChunkRing(entity, center, FREE_CHASE_RADIUS);
+	}
+
+	private boolean isInChunkRing(Entity entity, ChunkPos center, int radius) {
 		if (entity == null || center == null || entity.level() != level) {
 			return false;
 		}
-		return chebyshevChunkDistance(center, entity.chunkPosition()) <= FREE_CHASE_RADIUS;
+		return chebyshevChunkDistance(center, entity.chunkPosition()) <= radius;
 	}
 
 	public void tick() {
@@ -269,7 +318,7 @@ public final class SiegeCluster {
 			disband(false);
 			return;
 		}
-		if (state != SiegeClusterState.ASSEMBLE && living <= 2) {
+		if (!isHell() && state != SiegeClusterState.ASSEMBLE && living <= 2) {
 			disband(true);
 			return;
 		}
@@ -282,6 +331,9 @@ public final class SiegeCluster {
 	}
 
 	private void tickAssemble() {
+		if (isHell()) {
+			return;
+		}
 		List<ChunkPos> candidates = PbsTerritoryAdapter.findAdjacentAssaultChunks(level, anchorChunk);
 		if (candidates.isEmpty()) {
 			return;
@@ -309,7 +361,7 @@ public final class SiegeCluster {
 		state = SiegeClusterState.ASSAULT;
 		logState(from, "ASSAULT", reason);
 		int living = countLiving();
-		if (living <= 2) {
+		if (!isHell() && living <= 2) {
 			disband(true);
 			return;
 		}
@@ -320,6 +372,10 @@ public final class SiegeCluster {
 	}
 
 	private void tickAssault(int living) {
+		if (isHell()) {
+			tickHellAssault();
+			return;
+		}
 		if (living <= 2) {
 			disband(true);
 			return;
@@ -334,6 +390,93 @@ public final class SiegeCluster {
 		if (tickCounter % 20 == 0) {
 			maybeTransitionToFreeWhenNoBlocks();
 		}
+	}
+
+	private void tickHellAssault() {
+		completeHellHomeReturns();
+		if (tickCounter % 10 == 0) {
+			acquireHellWarning();
+		}
+	}
+
+	/** 7×7 预警（恶魔格为中心）：进圈则全队锁定追击。 */
+	private void acquireHellWarning() {
+		List<LivingEntity> found = findFriendlyInChunkRadius(anchorChunk, FREE_CHASE_RADIUS);
+		if (found.isEmpty()) {
+			return;
+		}
+		LivingEntity pick = pickNearestToHome(found);
+		if (pick == null) {
+			return;
+		}
+		for (UUID mobId : units.keySet()) {
+			SiegeUnitRecord record = units.get(mobId);
+			if (record == null || record.hasLockedAggro()) {
+				continue;
+			}
+			record.beginLockedAggro(pick);
+		}
+	}
+
+	private LivingEntity pickNearestToHome(List<LivingEntity> found) {
+		ChunkPos home = anchorChunk;
+		if (home == null || found == null || found.isEmpty()) {
+			return found == null || found.isEmpty() ? null : found.get(0);
+		}
+		double hx = home.getMiddleBlockX() + 0.5D;
+		double hz = home.getMiddleBlockZ() + 0.5D;
+		LivingEntity best = null;
+		double bestDist = Double.MAX_VALUE;
+		for (LivingEntity entity : found) {
+			double dx = entity.getX() - hx;
+			double dz = entity.getZ() - hz;
+			double dist = dx * dx + dz * dz;
+			if (dist < bestDist) {
+				bestDist = dist;
+				best = entity;
+			}
+		}
+		return best;
+	}
+
+	private void completeHellHomeReturns() {
+		for (UUID mobId : units.keySet()) {
+			SiegeUnitRecord record = units.get(mobId);
+			if (record == null || !record.isReturningHome()) {
+				continue;
+			}
+			Mob mob = resolveMob(mobId);
+			if (mob == null) {
+				continue;
+			}
+			if (anchorChunk != null && mob.chunkPosition().equals(anchorChunk)) {
+				mob.setHealth(mob.getMaxHealth());
+				record.finishReturningHome();
+			}
+		}
+	}
+
+	/** 锁定仇恨丢失：非地狱立刻接回原工作；地狱档先回家回血再接回。 */
+	public void onLockedAggroLost(Mob mob) {
+		if (disbanded || mob == null) {
+			return;
+		}
+		SiegeUnitRecord record = units.get(mob.getUUID());
+		if (record == null) {
+			return;
+		}
+		mob.setTarget(null);
+		if (!record.hasLockedAggro()) {
+			if (!record.isReturningHome()) {
+				record.returnToIdle();
+			}
+			return;
+		}
+		if (isHell()) {
+			record.startReturningHome();
+			return;
+		}
+		record.releaseLockedAggroAndResume();
 	}
 
 	/** 目标区块 3×3（含对角）无可破 PBS 块 → FREE。 */
@@ -362,6 +505,9 @@ public final class SiegeCluster {
 
 	private void tickFree(int living) {
 		if (living <= 2) {
+			if (isHell()) {
+				return;
+			}
 			disband(true);
 			return;
 		}
@@ -369,6 +515,9 @@ public final class SiegeCluster {
 		handleTargetsLeavingFreeZone();
 
 		if (tickCounter % 40 != 0) {
+			return;
+		}
+		if (isHell()) {
 			return;
 		}
 
@@ -432,6 +581,9 @@ public final class SiegeCluster {
 		List<UUID> affected = new ArrayList<>(globalPlayerMap.getOrDefault(leftTargetId, List.of()));
 		for (Map.Entry<UUID, SiegeUnitRecord> entry : units.entrySet()) {
 			SiegeUnitRecord record = entry.getValue();
+			if (record.hasLockedAggro() || record.isReturningHome()) {
+				continue;
+			}
 			if (leftTargetId.equals(record.getInitialChaseId()) || leftTargetId.equals(record.getCurrentChaseId())) {
 				if (!affected.contains(entry.getKey())) {
 					affected.add(entry.getKey());
@@ -499,25 +651,26 @@ public final class SiegeCluster {
 	}
 
 	public void onMobDamaged(Mob mob, Entity attacker) {
-		if (disbanded || state != SiegeClusterState.FREE) {
+		if (disbanded || mob == null) {
 			return;
 		}
-		if (!(attacker instanceof LivingEntity living) || !SiegeTargeting.isPlayerFriendly(living)) {
+		if (!(attacker instanceof LivingEntity living) || !SiegeTargeting.isValidAttackTarget(living)) {
 			return;
 		}
-		if (!isInChaseZone(living)) {
+		if (living.level() != level) {
 			return;
 		}
 		SiegeUnitRecord record = units.get(mob.getUUID());
 		if (record == null) {
 			return;
 		}
-		record.setCurrentChaseId(living.getUUID());
-		record.setMode(SiegeUnitMode.ATTACK);
-		globalPlayerMap.computeIfAbsent(living.getUUID(), k -> new ArrayList<>());
-		List<UUID> list = globalPlayerMap.get(living.getUUID());
-		if (!list.contains(mob.getUUID())) {
-			list.add(mob.getUUID());
+		record.beginLockedAggro(living);
+		if (state == SiegeClusterState.FREE) {
+			globalPlayerMap.computeIfAbsent(living.getUUID(), k -> new ArrayList<>());
+			List<UUID> list = globalPlayerMap.get(living.getUUID());
+			if (!list.contains(mob.getUUID())) {
+				list.add(mob.getUUID());
+			}
 		}
 	}
 
@@ -579,6 +732,9 @@ public final class SiegeCluster {
 		Collections.shuffle(hostiles, random);
 		int m = countLiving();
 		if (m <= 2) {
+			if (isHell()) {
+				return;
+			}
 			disband(true);
 			return;
 		}
@@ -605,7 +761,7 @@ public final class SiegeCluster {
 		if (m <= 2) {
 			return;
 		}
-		int x = floorLog2(m);
+		int x = Math.max(1, floorLog2(m));
 		int size = Math.max(1, m / (2 * x));
 		if (globalPlayerMap.size() >= size) {
 			return;
@@ -638,7 +794,7 @@ public final class SiegeCluster {
 
 	private void disband(boolean switchToAttack, String reason) {
 		SiegeClusterState from = state;
-		logState(from, "DISBAND", reason);
+		SiegeSpawnMonitor.disbanded(this, from, reason, tickCounter, countLiving());
 		disbanded = true;
 		if ("no_living".equals(reason) || "living_le_2".equals(reason)) {
 			SiegeSounds.playVictory(this);
@@ -776,7 +932,9 @@ public final class SiegeCluster {
 			dropTickets();
 			return;
 		}
-		ChunkPos next = targetChunk != null ? targetChunk : anchorChunk;
+		ChunkPos next = isHell()
+				? (anchorChunk != null ? anchorChunk : targetChunk)
+				: (targetChunk != null ? targetChunk : anchorChunk);
 		if (next == null) {
 			dropTickets();
 			return;
@@ -851,7 +1009,7 @@ public final class SiegeCluster {
 		return 31 - Integer.numberOfLeadingZeros(m);
 	}
 
-	static int chebyshevChunkDistance(ChunkPos a, ChunkPos b) {
+	public static int chebyshevChunkDistance(ChunkPos a, ChunkPos b) {
 		return Math.max(Math.abs(a.x - b.x), Math.abs(a.z - b.z));
 	}
 

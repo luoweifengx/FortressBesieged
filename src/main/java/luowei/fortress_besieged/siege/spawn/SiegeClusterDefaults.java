@@ -26,19 +26,19 @@ public final class SiegeClusterDefaults {
 		stages.add(new SiegeProgression.Stage(
 				"journey", "旅途", "always", false,
 				weights("roadkill", 0.7, "small", 0.3),
-				new SiegeProgression.SpawnWindow(7000, 18000, 0.25f)));
+				new SiegeProgression.SpawnWindow(7000, 18000, 0.10f)));
 		stages.add(new SiegeProgression.Stage(
 				"homeland", "故土", "host", false,
 				weights("small", 0.5, "roadkill", 0.2, "host", 0.3),
-				new SiegeProgression.SpawnWindow(10000, 22000, 0.20f)));
+				new SiegeProgression.SpawnWindow(10000, 22000, 0.12f)));
 		stages.add(new SiegeProgression.Stage(
 				"hard", "困难", "legion", false,
 				weights("legion", 0.5, "host", 0.3, "small", 0.15, "roadkill", 0.05),
 				new SiegeProgression.SpawnWindow(11000, 19000, 0.15f)));
 		stages.add(new SiegeProgression.Stage(
 				"end", "终末", "legion", true,
-				weights("legion", 0.7, "host", 0.2, "small", 0.022, "roadkill", 0.07, "hell", 0.008),
-				new SiegeProgression.SpawnWindow(16000, 23000, 0.10f)));
+				weights("legion", 0.708, "host", 0.2, "small", 0.022, "roadkill", 0.07),
+				new SiegeProgression.SpawnWindow(16000, 23000, 0.20f)));
 		return new SiegeProgression(stages);
 	}
 

@@ -5,6 +5,7 @@ import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.ai.goal.Goal;
 
+import luowei.fortress_besieged.siege.spawn.WildernessPackTracker;
 import luowei.fortress_besieged.siege.targeting.SiegeTargeting;
 
 /**
@@ -28,6 +29,11 @@ public class WildernessChaseGoal extends Goal {
 	public boolean canUse() {
 		if (!(mob.level() instanceof ServerLevel serverLevel)) {
 			return false;
+		}
+		LivingEntity forced = WildernessPackTracker.resolveForcedTarget(mob);
+		if (forced != null) {
+			target = forced;
+			return true;
 		}
 		LivingEntity chase = SiegeTargetDecision.findNearestAttackTarget(mob, serverLevel);
 		if (chase == null || !SiegeTargeting.isValidAttackTarget(chase)) {

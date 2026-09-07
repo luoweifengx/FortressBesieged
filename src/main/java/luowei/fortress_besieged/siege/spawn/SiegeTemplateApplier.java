@@ -45,14 +45,14 @@ import luowei.fortress_besieged.siege.spawn.SiegeClusterTemplate.StatsSpec;
 public final class SiegeTemplateApplier {
 	/** Vanilla {@code Mob} default for armor / hand slots. */
 	public static final float VANILLA_EQUIPMENT_DROP_CHANCE = 0.085F;
-	public static final float EQUIPMENT_DROP_MULTIPLIER = 0.1F;
-	public static final float EQUIPMENT_DROP_CHANCE = VANILLA_EQUIPMENT_DROP_CHANCE * EQUIPMENT_DROP_MULTIPLIER;
 
 	private SiegeTemplateApplier() {
 	}
 
 	public static void setEquippedDropChance(Mob mob, EquipmentSlot slot) {
-		mob.setDropChance(slot, EQUIPMENT_DROP_CHANCE);
+		float multiplier = SiegeDifficulty.equipmentDropMultiplier(
+				mob.level() == null ? null : mob.level().getDifficulty());
+		mob.setDropChance(slot, VANILLA_EQUIPMENT_DROP_CHANCE * multiplier);
 	}
 
 	public static EntityType<? extends Mob> resolveType(String entityId) {
