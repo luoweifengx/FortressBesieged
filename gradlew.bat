@@ -70,12 +70,17 @@ echo location of your Java installation. 1>&2
 :execute
 @rem Setup the command line
 
-
+@rem Cursor sandboxes set GRADLE_USER_HOME to an empty/partial temp cache.
+@rem Prefer the Windows profile cache whenever it already has wrapper dists.
+if exist "%USERPROFILE%\.gradle\wrapper\dists" set "GRADLE_USER_HOME=%USERPROFILE%\.gradle"
+if not defined GRADLE_USER_HOME if exist "%USERPROFILE%\.gradle" set "GRADLE_USER_HOME=%USERPROFILE%\.gradle"
+set "GRADLE_USER_HOME_OPT="
+if defined GRADLE_USER_HOME set "GRADLE_USER_HOME_OPT=-Dgradle.user.home=%GRADLE_USER_HOME%"
 
 @rem Execute Gradle
 @rem endlocal doesn't take effect until after the line is parsed and variables are expanded
 @rem which allows us to clear the local environment before executing the java command
-endlocal & "%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -jar "%APP_HOME%\gradle\wrapper\gradle-wrapper.jar" %* & call :exitWithErrorLevel
+endlocal & set "GRADLE_USER_HOME=%GRADLE_USER_HOME%" & "%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" %GRADLE_USER_HOME_OPT% -jar "%APP_HOME%\gradle\wrapper\gradle-wrapper.jar" %* & call :exitWithErrorLevel
 
 :exitWithErrorLevel
 @rem Use "%COMSPEC%" /c exit to allow operators to work properly in scripts

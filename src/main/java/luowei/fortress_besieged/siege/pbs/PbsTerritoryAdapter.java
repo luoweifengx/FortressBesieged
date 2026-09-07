@@ -3,6 +3,7 @@ package luowei.fortress_besieged.siege.pbs;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Random;
@@ -39,6 +40,77 @@ public final class PbsTerritoryAdapter {
 	 */
 	public static List<UUID> listSiegeTargets(MinecraftServer server) {
 		return PlayerBlockStatusLib.getEntityPollOrder(server);
+	}
+
+	/**
+	 * 保护期跟踪的玩家 UUID：组织条目用 {@code OrganizationRecord.owner()}，
+	 * 独立玩家条目用自身。查不到组织时按玩家 UUID 处理。
+	 */
+	public static UUID resolveProtectionPlayerId(MinecraftServer server, UUID pollTargetId) {
+		if (server == null || pollTargetId == null) {
+			return pollTargetId;
+		}
+		return PlayerBlockStatusLib.queryOrganization(server, pollTargetId)
+				.map(org -> org.owner())
+				.filter(owner -> owner != null)
+				.orElse(pollTargetId);
+	}
+
+	/**
+	 * Nearby player's poll target for protection / stage weights:
+	 * org UUID if they are in an organization, otherwise the player UUID.
+	 * Membership uses PBS {@code queryPlayerOrganization}; protection still goes
+	 * through {@code SiegePlayerProtection.isTimeToBesiege} → {@link #resolveProtectionPlayerId}.
+	 */
+	public static UUID resolvePollTargetForPlayer(MinecraftServer server, UUID playerId) {
+		if (server == null || playerId == null) {
+			return playerId;
+		}
+		Optional<UUID> memberOf = PlayerBlockStatusLib.queryPlayerOrganization(server, playerId);
+		if (memberOf.isPresent()) {
+			return memberOf.get();
+		}
+		for (UUID pollId : listSiegeTargets(server)) {
+			if (playerId.equals(pollId)) {
+				return playerId;
+			}
+			if (PlayerBlockStatusLib.queryOrganization(server, pollId)
+					.map(org -> playerId.equals(org.owner()))
+					.orElse(false)) {
+				return pollId;
+			}
+		}
+		return playerId;
+	}
+
+	/**
+	 * Player UUIDs whose iron/diamond advancements unlock a poll target:
+	 * org owner + {@code members()} + currently online members; solo is the target itself.
+	 */
+	public static List<UUID> listProgressionPlayerIds(MinecraftServer server, UUID pollTargetId) {
+		if (server == null || pollTargetId == null) {
+			return List.of();
+		}
+		var org = PlayerBlockStatusLib.queryOrganization(server, pollTargetId);
+		if (org.isEmpty()) {
+			return List.of(pollTargetId);
+		}
+		Set<UUID> ids = new LinkedHashSet<>();
+		UUID owner = org.get().owner();
+		if (owner != null) {
+			ids.add(owner);
+		}
+		var members = org.get().members();
+		if (members != null) {
+			ids.addAll(members);
+		}
+		for (var player : server.getPlayerList().getPlayers()) {
+			if (pollTargetId.equals(
+					PlayerBlockStatusLib.queryPlayerOrganization(server, player.getUUID()).orElse(null))) {
+				ids.add(player.getUUID());
+			}
+		}
+		return List.copyOf(ids);
 	}
 
 	/** 实体轮询列表对象（含 size / indexOf 等）。 */
@@ -208,6 +280,15 @@ public final class PbsTerritoryAdapter {
 		return PlayerBlockStatusLib.queryChunkState(level, chunkPos).orElse(ChunkState.NATURAL);
 	}
 
+	public static Optional<UUID> getOccupyingOrg(ServerLevel level, ChunkPos chunkPos) {
+		if (level == null || chunkPos == null) {
+			return Optional.empty();
+		}
+		return PlayerBlockStatusLib.queryChunkView(level, chunkPos)
+				.map(view -> view.getOccupyingOrg())
+				.filter(id -> id != null);
+	}
+
 	public static boolean isAssaultable(ChunkState state) {
 		return state == ChunkState.OCCUPIED || state == ChunkState.BORDER;
 	}
@@ -267,5 +348,93 @@ public final class PbsTerritoryAdapter {
 	 */
 	public static void notifyBlockRemoved(ServerLevel level, BlockPos pos) {
 		PlayerBlockStatusLib.notifyTrackedBlockRemoved(level, pos);
+	}
+
+	/**
+	 * 目标实体（组织或独立玩家）的占领 / 边界 / 持有合计。
+	 * {@code owned} = 该目标 OCCUPIED + BORDER，不是全图扫描。
+	 */
+	public static TerritoryQueries.EntityTerritoryCounts queryEntityTerritoryCounts(
+			ServerLevel level,
+			UUID targetId
+	) {
+		return PlayerBlockStatusLib.queryEntityTerritoryCounts(level, targetId);
+	}
+
+	/** {@link TerritoryQueries.EntityTerritoryCounts#owned()}：OCCUPIED + BORDER。 */
+	public static int queryOwnedCount(ServerLevel level, UUID targetId) {
+		return queryEntityTerritoryCounts(level, targetId).owned();
+	}
+
+	/** 当前维度全部恶魔区块（PBS 附属状态，本模组只读）。 */
+	public static List<ChunkPos> queryDemonChunks(ServerLevel level) {
+		return PlayerBlockStatusLib.queryDemonChunks(level);
+	}
+
+	public static boolean hasDemonChunks(ServerLevel level) {
+		List<ChunkPos> chunks = queryDemonChunks(level);
+		return chunks != null && !chunks.isEmpty();
+	}
+
+	public static boolean isDemonChunk(ServerLevel level, ChunkPos chunkPos) {
+		return getState(level, chunkPos) == ChunkState.DEMON;
+	}
+
+	/**
+	 * 从恶魔区块列表抽锚点（地狱档专用，不走 HOSTILE_BORDER Bernoulli）。
+	 * 抽中后可再在切比雪夫 ≤ {@code expandChebyshev} 内找 HOSTILE_BORDER 作为实际落点；
+	 * 没有邻接敌对边界时直接落在恶魔区块上。
+	 */
+	public static List<ChunkPos> sampleDemonAnchorSites(
+			ServerLevel level,
+			int limit,
+			Random random,
+			int expandChebyshev
+	) {
+		List<ChunkPos> demons = queryDemonChunks(level);
+		if (demons == null || demons.isEmpty() || limit <= 0 || random == null) {
+			return List.of();
+		}
+		List<ChunkPos> shuffled = new ArrayList<>(demons);
+		for (int i = shuffled.size() - 1; i > 0; i--) {
+			int j = random.nextInt(i + 1);
+			ChunkPos tmp = shuffled.get(i);
+			shuffled.set(i, shuffled.get(j));
+			shuffled.set(j, tmp);
+		}
+		int take = Math.min(limit, shuffled.size());
+		if (expandChebyshev < 0) {
+			return List.copyOf(shuffled.subList(0, take));
+		}
+		Set<Long> seen = new HashSet<>();
+		List<ChunkPos> sites = new ArrayList<>(take);
+		for (int i = 0; i < take; i++) {
+			ChunkPos demon = shuffled.get(i);
+			ChunkPos site = pickHostileBorderNear(level, demon, expandChebyshev, seen, random);
+			sites.add(site != null ? site : demon);
+		}
+		return List.copyOf(sites);
+	}
+
+	private static ChunkPos pickHostileBorderNear(
+			ServerLevel level,
+			ChunkPos origin,
+			int expandChebyshev,
+			Set<Long> seen,
+			Random random
+	) {
+		List<ChunkPos> near = new ArrayList<>();
+		for (int dx = -expandChebyshev; dx <= expandChebyshev; dx++) {
+			for (int dz = -expandChebyshev; dz <= expandChebyshev; dz++) {
+				ChunkPos candidate = new ChunkPos(origin.x + dx, origin.z + dz);
+				if (getState(level, candidate) == ChunkState.HOSTILE_BORDER && seen.add(candidate.toLong())) {
+					near.add(candidate);
+				}
+			}
+		}
+		if (near.isEmpty()) {
+			return seen.add(origin.toLong()) ? origin : null;
+		}
+		return near.get(random.nextInt(near.size()));
 	}
 }

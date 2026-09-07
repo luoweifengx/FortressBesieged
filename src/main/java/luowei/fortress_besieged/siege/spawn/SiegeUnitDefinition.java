@@ -86,7 +86,7 @@ public final class SiegeUnitDefinition {
 		return offHand;
 	}
 
-	/** Apply configured gear; drop chance set to 0 so gear is not farmed. */
+	/** Apply configured gear; drop chance is vanilla default × 0.1. */
 	public void equip(Mob mob) {
 		if (mob == null) {
 			return;
@@ -104,6 +104,6 @@ public final class SiegeUnitDefinition {
 			return;
 		}
 		mob.setItemSlot(slot, new ItemStack(item));
-		mob.setDropChance(slot, 0.0F);
+		SiegeTemplateApplier.setEquippedDropChance(mob, slot);
 	}
 }

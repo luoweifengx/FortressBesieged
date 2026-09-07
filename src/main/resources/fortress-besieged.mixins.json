@@ -4,7 +4,16 @@
 	"compatibilityLevel": "JAVA_21",
 	"mixins": [
 		"ExampleMixin",
-		"MobGoalSelectorAccessor"
+		"MobGoalSelectorAccessor",
+		"NaturalSpawnerMixin",
+		"PhantomSpawnerMixin",
+		"SiegeFriendlyFireMixin",
+		"SiegeMobSetTargetMixin",
+		"SiegeWitherSkullDropMixin",
+		"SiegeZombifiedPiglinMixin",
+		"SpawnPlacementsMixin",
+		"VillageSiegeMixin",
+		"WildernessNoSaveMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1

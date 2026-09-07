@@ -9,6 +9,7 @@ import java.util.UUID;
 import java.util.function.Predicate;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.Mob;
@@ -19,11 +20,18 @@ import net.minecraft.world.entity.ai.goal.MeleeAttackGoal;
 import net.minecraft.world.entity.ai.goal.RandomStrollGoal;
 import net.minecraft.world.entity.ai.goal.WaterAvoidingRandomStrollGoal;
 import net.minecraft.world.entity.ai.goal.WrappedGoal;
+import net.minecraft.world.entity.monster.AbstractSkeleton;
+import net.minecraft.world.entity.monster.Ghast;
+import net.minecraft.world.entity.monster.WitherSkeleton;
+import net.minecraft.world.entity.monster.ZombifiedPiglin;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.Items;
 
 import luowei.fortress_besieged.FortressBesieged;
 import luowei.fortress_besieged.mixin.MobGoalSelectorAccessor;
 import luowei.fortress_besieged.siege.SiegeCluster;
 import luowei.fortress_besieged.siege.SiegeClusterManager;
+import luowei.fortress_besieged.siege.targeting.SiegeTargeting;
 
 /**
  * 为集群怪物安装专用 Goal：卸掉原版索敌/近战，保留围城 Goal + 游荡。
@@ -40,15 +48,38 @@ public final class SiegeAiHelper {
 	private SiegeAiHelper() {
 	}
 
+	public static boolean hasSiegeGoals(Mob mob) {
+		if (mob == null) {
+			return false;
+		}
+		for (WrappedGoal wrapped : goals(mob).getAvailableGoals()) {
+			if (isSiegeGoalInstance(wrapped.getGoal())) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	public static void install(Mob mob, SiegeCluster cluster) {
+		if (hasSiegeGoals(mob)) {
+			applyGlowing(mob);
+			SiegeClusterManager.bindMob(mob, cluster);
+			angerZombifiedPiglin(mob);
+			return;
+		}
 		GoalSelector goals = goals(mob);
 		GoalSelector targets = targets(mob);
 		backupAndStripVanillaCombat(mob, goals, targets);
 		// 卸掉原有游荡后按固定优先级加回，避免与围城 Goal 抢优先级
 		removeWanderGoals(goals);
-		goals.addGoal(1, new SiegeDestroyBlockGoal(mob, cluster));
+		boolean ghast = isGhast(mob);
+		if (!ghast) {
+			goals.addGoal(1, new SiegeDestroyBlockGoal(mob, cluster));
+		}
 		goals.addGoal(2, new SiegeAttackGoal(mob, cluster));
-		goals.addGoal(3, new SiegeIdleReturnGoal(mob, cluster));
+		if (!ghast) {
+			goals.addGoal(3, new SiegeIdleReturnGoal(mob, cluster));
+		}
 		goals.addGoal(4, new SiegeIdleDecideGoal(mob, cluster));
 		if (mob instanceof PathfinderMob pathfinder) {
 			goals.addGoal(7, new WaterAvoidingRandomStrollGoal(pathfinder, 1.0D));
@@ -56,11 +87,44 @@ public final class SiegeAiHelper {
 		mob.setTarget(null);
 		applyGlowing(mob);
 		SiegeClusterManager.bindMob(mob, cluster);
-		FortressBesieged.LOGGER.info(
+		angerZombifiedPiglin(mob);
+		FortressBesieged.LOGGER.debug(
 				"[siege] install goals+glowing on {} uuid={} cluster={}",
 				mob.getType().getDescriptionId(),
 				mob.getUUID(),
 				cluster.getId());
+	}
+
+	/**
+	 * Wilderness packs: chase player-side targets or wander. No DESTROY / ASSAULT /
+	 * idle-dice-to-mine, no glowing, no cluster bind.
+	 */
+	public static void installWilderness(Mob mob) {
+		if (mob == null || hasWildernessGoals(mob) || hasSiegeGoals(mob)) {
+			return;
+		}
+		GoalSelector goals = goals(mob);
+		GoalSelector targets = targets(mob);
+		backupAndStripVanillaCombat(mob, goals, targets);
+		removeWanderGoals(goals);
+		goals.addGoal(2, new WildernessChaseGoal(mob));
+		if (mob instanceof PathfinderMob pathfinder) {
+			goals.addGoal(7, new WaterAvoidingRandomStrollGoal(pathfinder, 1.0D));
+		}
+		mob.setTarget(null);
+		angerZombifiedPiglin(mob);
+	}
+
+	public static boolean hasWildernessGoals(Mob mob) {
+		if (mob == null) {
+			return false;
+		}
+		for (WrappedGoal wrapped : goals(mob).getAvailableGoals()) {
+			if (wrapped.getGoal() instanceof WildernessChaseGoal) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	public static void uninstall(Mob mob) {
@@ -141,6 +205,40 @@ public final class SiegeAiHelper {
 
 	private static void removeWanderGoals(GoalSelector goals) {
 		goals.removeAllGoals(goal -> goal instanceof RandomStrollGoal);
+	}
+
+	static boolean isGhast(Mob mob) {
+		return mob instanceof Ghast;
+	}
+
+	/**
+	 * 持弓骷髅（含流浪者/沼骸，不含凋灵骷髅）：不抢 MOVE/LOOK，保留原版 {@code RangedBowAttackGoal}。
+	 */
+	static boolean isBowSkeleton(Mob mob) {
+		return mob instanceof AbstractSkeleton
+				&& !(mob instanceof WitherSkeleton)
+				&& mob.isHolding(Items.BOW);
+	}
+
+	/** 恶魂火球 / 持弓骷髅射箭：本模组 Goal 只负责 {@code setTarget}。 */
+	static boolean leaveVanillaRanged(Mob mob) {
+		return isGhast(mob) || isBowSkeleton(mob);
+	}
+
+	/**
+	 * 本模组刷出的僵尸猪灵立刻进入持久仇恨，不必先挨打。
+	 */
+	public static void angerZombifiedPiglin(Mob mob) {
+		if (!(mob instanceof ZombifiedPiglin piglin) || !(mob.level() instanceof ServerLevel level)) {
+			return;
+		}
+		piglin.startPersistentAngerTimer();
+		piglin.setRemainingPersistentAngerTime(Integer.MAX_VALUE);
+		Player nearest = level.getNearestPlayer(piglin, 128.0D);
+		if (nearest != null && SiegeTargeting.isValidAttackTarget(nearest)) {
+			piglin.setPersistentAngerTarget(nearest.getUUID());
+			piglin.setTarget(nearest);
+		}
 	}
 
 	private static boolean isSiegeGoalInstance(Goal goal) {

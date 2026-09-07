@@ -68,12 +68,18 @@ public final class SiegeTargetDecision {
 		boolean attackHit = roll == 0;
 
 		if (attackHit) {
-			LivingEntity target = findNearestAttackTarget(mob, serverLevel);
+			LivingEntity target = findNearestAttackTarget(mob, serverLevel, cluster);
 			if (target != null) {
 				record.assignAttack(target);
 				logIdleDecision(mob, firstRoll, denom, roll, "ATTACK", null);
 				return true;
 			}
+		}
+
+		if (SiegeAiHelper.isGhast(mob)) {
+			mob.setTarget(null);
+			logIdleDecision(mob, firstRoll, denom, roll, "IDLE", null);
+			return false;
 		}
 
 		BlockPos block = findNearestBreakableNear(serverLevel, cluster, mob);
@@ -89,6 +95,13 @@ public final class SiegeTargetDecision {
 	}
 
 	public static LivingEntity findNearestAttackTarget(Mob mob, ServerLevel level) {
+		return findNearestAttackTarget(mob, level, null);
+	}
+
+	/**
+	 * 最近可攻击目标。{@code cluster} 非空时还要求目标在该集群中心 7×7 内。
+	 */
+	public static LivingEntity findNearestAttackTarget(Mob mob, ServerLevel level, SiegeCluster cluster) {
 		double range = scanRange(mob);
 		AABB box = mob.getBoundingBox().inflate(range, range * 0.5D, range);
 		List<LivingEntity> found = level.getEntitiesOfClass(
@@ -98,6 +111,9 @@ public final class SiegeTargetDecision {
 		LivingEntity best = null;
 		double bestDist = Double.MAX_VALUE;
 		for (LivingEntity entity : found) {
+			if (cluster != null && !cluster.isInChaseZone(entity)) {
+				continue;
+			}
 			double dist = mob.distanceToSqr(entity);
 			if (dist < bestDist) {
 				bestDist = dist;
@@ -160,7 +176,7 @@ public final class SiegeTargetDecision {
 
 	private static void logIdleDecision(
 			Mob mob, boolean firstRoll, int denom, int roll, String choice, BlockPos destroyPos) {
-		FortressBesieged.LOGGER.info(
+		FortressBesieged.LOGGER.debug(
 				"[siege idle] decide uuid={} firstRoll={} denom={} roll={} hit={} choice={} destroyPos={}",
 				mob.getUUID(),
 				firstRoll,

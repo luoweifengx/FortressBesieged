@@ -27,16 +27,28 @@ public final class SiegeSpawnConfig {
 	public static final float SITE_ACCEPT_PROBABILITY = 0.15f;
 
 	/**
-	 * Fraction of the PBS EntityPollList to siege each natural wave / {@code /siege spawn}.
+	 * Fraction of the PBS EntityPollList to siege for {@code /siege spawn} command waves.
+	 * Natural refresh does not use this; it rolls each target's stage {@code chance}
+	 * while the stage window is open.
 	 * Sample count = clamp(round(n × ratio), 1..n) when the poll is non-empty.
 	 */
 	public static final double TARGET_SAMPLE_RATIO = 0.2;
 
 	/**
-	 * Day-time of day (getDayTime % 24000) that triggers a natural siege wave.
-	 * 11000 ≈ shortly before nightfall.
+	 * How often (world game-time ticks) to refresh the PBS poll, and the
+	 * minimum gap between natural chance rolls for one target while its
+	 * stage window is open. A miss does not consume the rest of the day.
 	 */
-	public static final int NATURAL_TRIGGER_DAY_TIME = 11000;
+	public static final int NATURAL_PLAN_INTERVAL_TICKS = 200;
+
+	/** Max natural {@code spawnRolled} calls per dimension per world tick. */
+	public static final int NATURAL_SPAWN_BUDGET_PER_TICK = 1;
+
+	/**
+	 * New-player protection: overworld game days ({@code dayTime/24000}) before
+	 * {@code isTimeToBesiege} becomes true. Sticky once true.
+	 */
+	public static final int NEW_PLAYER_PROTECTION_DAYS = 1;
 
 	private SiegeSpawnConfig() {
 	}

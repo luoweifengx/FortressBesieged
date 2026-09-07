@@ -60,8 +60,15 @@ public final class SiegeSpawnSiteSelector {
 	 * @return selection; {@code chosenSites} empty if no territory / no HOSTILE_BORDER / all Bernoulli rejects
 	 */
 	public static SiteSelection select(ServerLevel level, UUID targetId, Random random) {
+		return selectHostileBorder(level, targetId, random);
+	}
+
+	public static SiteSelection selectHostileBorder(ServerLevel level, UUID targetId, Random random) {
 		ChunkPos center = PbsTerritoryAdapter.getTerritoryCenter(level, targetId).orElse(null);
 		if (center == null) {
+			SiegeSpawnMonitor.debug(
+					"site skip player={} reason=no_territory dim={}",
+					SiegeSpawnMonitor.target(level, targetId), SiegeSpawnMonitor.dim(level));
 			return new SiteSelection(targetId, null, List.of(), List.of());
 		}
 		List<ChunkPos> nearest = PbsTerritoryAdapter.findNearestHostileBorders(
@@ -73,7 +80,49 @@ public final class SiegeSpawnSiteSelector {
 				SiegeSpawnConfig.BORDER_SAMPLE_COUNT,
 				SiegeSpawnConfig.HOSTILE_EXPAND_CHEBYSHEV);
 		List<ChunkPos> chosen = pickSites(nearest, random);
+		if (SiegeSpawnMonitor.isDebug()) {
+			SiegeSpawnMonitor.debug(
+					"site player={} center={} candidates={} chosen={} E≈{} p={} dim={}",
+					SiegeSpawnMonitor.target(level, targetId),
+					SiegeSpawnMonitor.chunk(center),
+					nearest.size(),
+					chosen.size(),
+					String.format("%.2f", nearest.size() * (double) SiegeSpawnConfig.SITE_ACCEPT_PROBABILITY),
+					SiegeSpawnConfig.SITE_ACCEPT_PROBABILITY,
+					SiegeSpawnMonitor.dim(level));
+		}
 		return new SiteSelection(targetId, center, List.copyOf(nearest), List.copyOf(chosen));
+	}
+
+	/**
+	 * Hell-tier sites: sample demon chunks as anchors (optionally snap to nearby HOSTILE_BORDER).
+	 * Does not run the ordinary HOSTILE_BORDER Bernoulli pipeline.
+	 */
+	public static SiteSelection selectDemon(ServerLevel level, UUID targetId, Random random) {
+		ChunkPos center = PbsTerritoryAdapter.getTerritoryCenter(level, targetId).orElse(null);
+		if (center == null) {
+			SiegeSpawnMonitor.debug(
+					"site skip player={} reason=no_territory mode=demon dim={}",
+					SiegeSpawnMonitor.target(level, targetId), SiegeSpawnMonitor.dim(level));
+			return new SiteSelection(targetId, null, List.of(), List.of());
+		}
+		List<ChunkPos> demons = PbsTerritoryAdapter.queryDemonChunks(level);
+		if (demons.isEmpty()) {
+			SiegeSpawnMonitor.debug(
+					"site skip player={} reason=no_demon_chunks dim={}",
+					SiegeSpawnMonitor.target(level, targetId), SiegeSpawnMonitor.dim(level));
+			return new SiteSelection(targetId, center, List.of(), List.of());
+		}
+		List<ChunkPos> chosen = PbsTerritoryAdapter.sampleDemonAnchorSites(
+				level, 1, random, SiegeSpawnConfig.HOSTILE_EXPAND_CHEBYSHEV);
+		SiegeSpawnMonitor.debug(
+				"site player={} center={} mode=demon demonChunks={} chosen={} dim={}",
+				SiegeSpawnMonitor.target(level, targetId),
+				SiegeSpawnMonitor.chunk(center),
+				demons.size(),
+				chosen.size(),
+				SiegeSpawnMonitor.dim(level));
+		return new SiteSelection(targetId, center, List.copyOf(demons), List.copyOf(chosen), chosen.size());
 	}
 
 	/**

@@ -36,7 +36,7 @@ public final class SiegeBreachExecutor {
 	private final List<BreachAction> actions = new ArrayList<>();
 	private int index;
 	private int ticksOnAction;
-	private int breakTicks;
+	private float breakProgress;
 	private int lastProgress = -1;
 
 	void setActions(List<BreachAction> actions) {
@@ -46,7 +46,7 @@ public final class SiegeBreachExecutor {
 		}
 		this.index = 0;
 		this.ticksOnAction = 0;
-		this.breakTicks = 0;
+		this.breakProgress = 0.0F;
 		this.lastProgress = -1;
 	}
 
@@ -64,7 +64,7 @@ public final class SiegeBreachExecutor {
 		actions.clear();
 		index = 0;
 		ticksOnAction = 0;
-		breakTicks = 0;
+		breakProgress = 0.0F;
 		lastProgress = -1;
 	}
 
@@ -95,7 +95,7 @@ public final class SiegeBreachExecutor {
 			changed = true;
 			if (i == index) {
 				ticksOnAction = 0;
-				breakTicks = 0;
+				breakProgress = 0.0F;
 				lastProgress = -1;
 			}
 		}
@@ -110,12 +110,11 @@ public final class SiegeBreachExecutor {
 			return Status.FINISHED;
 		}
 		BreachAction action = actions.get(index);
-		int breakTicksMax = SiegePathCostConfig.get().breakTickBase;
 		ticksOnAction++;
 		return switch (action.type()) {
 			case WALK -> tickWalk(mob, action.pos());
 			case PLACE -> tickPlace(serverLevel, mob, action.pos(), assigned);
-			case BREAK -> tickBreak(serverLevel, mob, cluster, action.pos(), assigned, breakTicksMax);
+			case BREAK -> tickBreak(serverLevel, mob, cluster, action.pos(), assigned);
 		};
 	}
 
@@ -127,7 +126,7 @@ public final class SiegeBreachExecutor {
 		}
 		int timeout = SiegePathCostConfig.get().walkTimeoutTicks;
 		if (ticksOnAction >= timeout) {
-			FortressBesieged.LOGGER.info(
+			FortressBesieged.LOGGER.debug(
 					"[siege destroy] WALK_TIMEOUT mob={} uuid={} walkTo={} ticks={} timeout={}",
 					mob.getType().getDescriptionId(),
 					mob.getUUID(),
@@ -139,7 +138,7 @@ public final class SiegeBreachExecutor {
 		if (ticksOnAction == 1) {
 			// 清残留 path，避免 navigation.tick 覆盖 MoveControl；不用原版导航走路
 			mob.getNavigation().stop();
-			FortressBesieged.LOGGER.info(
+			FortressBesieged.LOGGER.debug(
 					"[siege destroy] walkTo={} mob={} uuid={}",
 					pos,
 					mob.getType().getDescriptionId(),
@@ -181,8 +180,7 @@ public final class SiegeBreachExecutor {
 			Mob mob,
 			SiegeCluster cluster,
 			BlockPos pos,
-			BlockPos assigned,
-			int breakTicksMax
+			BlockPos assigned
 	) {
 		if (pos.equals(assigned)) {
 			// 不跳过 assigned BREAK：交给 Goal 按挖掘盒 tickBreakAssigned，避免空过后再因旧 reach 不敲
@@ -200,21 +198,21 @@ public final class SiegeBreachExecutor {
 		}
 		mob.getLookControl().setLookAt(Vec3.atCenterOf(pos));
 		mob.getNavigation().stop();
-		breakTicks++;
-		int progress = (int) ((breakTicks / (float) breakTicksMax) * 10.0F);
+		breakProgress += SiegeMining.tickProgress(mob, state, level, pos);
+		int progress = SiegeMining.crackStage(breakProgress);
 		if (progress != lastProgress) {
 			lastProgress = progress;
 			level.destroyBlockProgress(mob.getId(), pos, progress);
 		}
-		if (breakTicks < breakTicksMax) {
+		if (breakProgress < 1.0F) {
 			return Status.RUNNING;
 		}
 		boolean playerPlaced = PbsTerritoryAdapter.isPlayerPlacedBlock(level, pos);
 		boolean tracked = cluster.isTrackedBlock(pos);
-		boolean dropped = level.destroyBlock(pos, true, mob);
+		boolean destroyed = level.destroyBlock(pos, false, mob);
 		boolean gone = level.getBlockState(pos).isAir();
 		level.destroyBlockProgress(mob.getId(), pos, -1);
-		if (!(dropped || gone)) {
+		if (!(destroyed || gone)) {
 			return Status.FAILED;
 		}
 		if (playerPlaced) {
@@ -231,7 +229,7 @@ public final class SiegeBreachExecutor {
 	private void advance() {
 		index++;
 		ticksOnAction = 0;
-		breakTicks = 0;
+		breakProgress = 0.0F;
 		lastProgress = -1;
 	}
 

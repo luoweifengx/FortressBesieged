@@ -26,7 +26,7 @@ public class SiegeDestroyBlockGoal extends Goal {
 
 	private BlockPos targetPos;
 	private BlockPos plannedAssigned;
-	private int breakTicks;
+	private float breakProgress;
 	private int lastProgress = -1;
 	private int replanCooldown;
 
@@ -96,7 +96,7 @@ public class SiegeDestroyBlockGoal extends Goal {
 		mob.setTarget(null);
 		resetBreakProgress();
 		replanCooldown = 0;
-		FortressBesieged.LOGGER.info(
+		FortressBesieged.LOGGER.debug(
 				"[siege destroy] start mob={} uuid={} target={} state={}",
 				mob.getType().getDescriptionId(),
 				mob.getUUID(),
@@ -173,35 +173,40 @@ public class SiegeDestroyBlockGoal extends Goal {
 	}
 
 	private void tickBreakAssigned(ServerLevel serverLevel) {
-		SiegePathCostConfig cfg = SiegePathCostConfig.get();
 		executor.clearCrack(serverLevel, mob);
 		executor.clear();
 		mob.getNavigation().stop();
-		breakTicks++;
-		int maxBreak = cfg.assignedBreakTicks;
-		int progress = (int) ((breakTicks / (float) maxBreak) * 10.0F);
+		BlockState state = serverLevel.getBlockState(targetPos);
+		if (state.getDestroySpeed(serverLevel, targetPos) < 0.0F) {
+			serverLevel.destroyBlockProgress(mob.getId(), targetPos, -1);
+			resetBreakProgress();
+			onPlanOrExecFailure(serverLevel, "FAILED");
+			return;
+		}
+		breakProgress += SiegeMining.tickProgress(mob, state, serverLevel, targetPos);
+		int progress = SiegeMining.crackStage(breakProgress);
 		if (progress != lastProgress) {
 			lastProgress = progress;
 			serverLevel.destroyBlockProgress(mob.getId(), targetPos, progress);
 		}
-		if (breakTicks < maxBreak) {
+		if (breakProgress < 1.0F) {
 			return;
 		}
 		BlockPos broken = targetPos;
 		BlockState before = serverLevel.getBlockState(broken);
-		boolean dropped = serverLevel.destroyBlock(broken, true, mob);
+		boolean destroyed = serverLevel.destroyBlock(broken, false, mob);
 		BlockState after = serverLevel.getBlockState(broken);
 		boolean gone = after.isAir();
-		FortressBesieged.LOGGER.info(
+		FortressBesieged.LOGGER.debug(
 				"[siege destroy] destroyBlock mob={} uuid={} pos={} before={} destroyBlockReturned={} after={} gone={}",
 				mob.getType().getDescriptionId(),
 				mob.getUUID(),
 				broken,
 				before,
-				dropped,
+				destroyed,
 				after,
 				gone);
-		if (dropped || gone) {
+		if (destroyed || gone) {
 			PbsTerritoryAdapter.notifyBlockRemoved(serverLevel, broken);
 			cluster.onTrackedBlockDestroyed(broken, mob);
 			cluster.onRouteBlockRemoved(broken);
@@ -248,7 +253,7 @@ public class SiegeDestroyBlockGoal extends Goal {
 	}
 
 	private void logPlanOk(String mode, SiegeCostPathfinder.Result result) {
-		FortressBesieged.LOGGER.info(
+		FortressBesieged.LOGGER.debug(
 				"[siege destroy] plan ok mode={} mob={} uuid={} target={} actions={} cost={} expanded={}",
 				mode,
 				mob.getType().getDescriptionId(),
@@ -272,7 +277,7 @@ public class SiegeDestroyBlockGoal extends Goal {
 		resetBreakProgress();
 		// 保留同一 assigned，长冷却后重试；绝不 requestDestroyReassign
 		replanCooldown = cfg.failCooldownTicks;
-		FortressBesieged.LOGGER.info(
+		FortressBesieged.LOGGER.debug(
 				"[siege destroy] path fail ({}) mob={} uuid={} target={} cooldown={} (same target, no reassign)",
 				reason,
 				mob.getType().getDescriptionId(),
@@ -290,7 +295,7 @@ public class SiegeDestroyBlockGoal extends Goal {
 	}
 
 	private void resetBreakProgress() {
-		breakTicks = 0;
+		breakProgress = 0.0F;
 		lastProgress = -1;
 	}
 }

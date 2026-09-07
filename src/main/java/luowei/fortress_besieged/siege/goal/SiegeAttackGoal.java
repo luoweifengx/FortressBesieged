@@ -11,7 +11,7 @@ import luowei.fortress_besieged.siege.SiegeUnitRecord;
 import luowei.fortress_besieged.siege.targeting.SiegeTargeting;
 
 /**
- * ATTACK：用原版 navigation {@code moveTo} 追打单位自行选定的友善目标。
+ * ATTACK：近战用原版 navigation {@code moveTo} 追打；持弓骷髅 / 恶魂只 {@code setTarget}，射击走原版 Goal。
  */
 public class SiegeAttackGoal extends Goal {
 	private final Mob mob;
@@ -22,7 +22,9 @@ public class SiegeAttackGoal extends Goal {
 	public SiegeAttackGoal(Mob mob, SiegeCluster cluster) {
 		this.mob = mob;
 		this.cluster = cluster;
-		this.setFlags(SiegeAiHelper.moveLookFlags());
+		if (!SiegeAiHelper.leaveVanillaRanged(mob)) {
+			this.setFlags(SiegeAiHelper.moveLookFlags());
+		}
 	}
 
 	@Override
@@ -53,20 +55,35 @@ public class SiegeAttackGoal extends Goal {
 		attackCooldown = 0;
 		if (target != null) {
 			mob.setTarget(target);
-			mob.getNavigation().moveTo(target, 1.1D);
+			if (!SiegeAiHelper.leaveVanillaRanged(mob)) {
+				mob.getNavigation().moveTo(target, 1.1D);
+			}
 		}
 	}
 
 	@Override
 	public void stop() {
 		mob.setTarget(null);
-		mob.getNavigation().stop();
+		if (!SiegeAiHelper.leaveVanillaRanged(mob)) {
+			mob.getNavigation().stop();
+		}
 		target = null;
 	}
 
 	@Override
 	public void tick() {
 		if (target == null) {
+			return;
+		}
+		if (!cluster.isInChaseZone(target)) {
+			SiegeUnitRecord record = cluster.getUnit(mob);
+			if (record != null) {
+				record.returnToIdle();
+			}
+			return;
+		}
+		mob.setTarget(target);
+		if (SiegeAiHelper.leaveVanillaRanged(mob)) {
 			return;
 		}
 		mob.getLookControl().setLookAt(target, 30.0F, 30.0F);

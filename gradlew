@@ -202,6 +202,17 @@ fi
 # Add default JVM options here. You can also use JAVA_OPTS and GRADLE_OPTS to pass JVM options to this script.
 DEFAULT_JVM_OPTS='"-Xmx64m" "-Xms64m"'
 
+# Wrapper resolves dists from gradle.user.home. Sandboxes may set
+# GRADLE_USER_HOME to an empty/partial temp cache; prefer ~/.gradle
+# whenever it already has wrapper dists.
+if [ -d "${HOME}/.gradle/wrapper/dists" ]; then
+    GRADLE_USER_HOME="${HOME}/.gradle"
+    export GRADLE_USER_HOME
+elif [ -z "${GRADLE_USER_HOME:-}" ] && [ -d "${HOME}/.gradle" ]; then
+    GRADLE_USER_HOME="${HOME}/.gradle"
+    export GRADLE_USER_HOME
+fi
+
 # Collect all arguments for the java command:
 #   * DEFAULT_JVM_OPTS, JAVA_OPTS, and optsEnvironmentVar are not allowed to contain shell fragments,
 #     and any embedded shellness will be escaped.
@@ -212,6 +223,10 @@ set -- \
         "-Dorg.gradle.appname=$APP_BASE_NAME" \
         -jar "$APP_HOME/gradle/wrapper/gradle-wrapper.jar" \
         "$@"
+
+if [ -n "${GRADLE_USER_HOME:-}" ]; then
+    set -- "-Dgradle.user.home=$GRADLE_USER_HOME" "$@"
+fi
 
 # Stop when "xargs" is not available.
 if ! command -v xargs >/dev/null 2>&1

@@ -3,10 +3,13 @@ package luowei.fortress_besieged.siege;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Random;
+import java.util.Set;
 import java.util.UUID;
 
 import net.minecraft.core.BlockPos;
@@ -18,9 +21,12 @@ import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.phys.AABB;
 
 import luowei.fortress_besieged.FortressBesieged;
+import luowei.fortress_besieged.siege.SiegeClusterSavedData.ClusterSnapshot;
+import luowei.fortress_besieged.siege.SiegeClusterSavedData.UnitSnapshot;
 import luowei.fortress_besieged.siege.goal.SiegeAiHelper;
 import luowei.fortress_besieged.siege.goal.SiegeTargetDecision;
 import luowei.fortress_besieged.siege.pbs.PbsTerritoryAdapter;
+import luowei.fortress_besieged.siege.spawn.SiegeSpawnMonitor;
 import luowei.fortress_besieged.siege.targeting.SiegeTargeting;
 import luowei.player_block_status.lib.chunk.ChunkState;
 
@@ -30,8 +36,10 @@ import luowei.player_block_status.lib.chunk.ChunkState;
 public final class SiegeCluster {
 	public static final int FREE_CHASE_RADIUS = 3; // 7×7 Chebyshev
 	public static final int FREE_SCAN_RADIUS = 1;  // 3×3 Chebyshev
+	/** 读档后：未进世界的单位 UUID 不按死亡 prune；超时仍未出现则视为离线期间已死。 */
+	private static final int LOAD_GRACE_TICKS = 400;
 
-	private final UUID id = UUID.randomUUID();
+	private final UUID id;
 	private final ServerLevel level;
 	private final Random random = new Random();
 
@@ -39,6 +47,10 @@ public final class SiegeCluster {
 	private ChunkPos anchorChunk;
 	private ChunkPos targetChunk;
 	private boolean disbanded;
+	private ChunkPos ticketCenter;
+	private int loadGraceTicks;
+	/** 本会话里曾经 resolve 到过活实体的单位；用于区分「从未加载」与「走出加载区」。 */
+	private final Set<UUID> seenInWorld = new HashSet<>();
 
 	/** 怪物 UUID → 单位记录 */
 	private final Map<UUID, SiegeUnitRecord> units = new HashMap<>();
@@ -54,7 +66,15 @@ public final class SiegeCluster {
 
 	private int tickCounter;
 
+	private String templateId;
+	private String templateName;
+	private String race;
+	private String tier;
+	/** Poll target (org or solo player) this cluster was spawned against; not persisted. */
+	private UUID siegeTargetId;
+
 	public SiegeCluster(ServerLevel level, ChunkPos anchorChunk, List<Mob> mobs) {
+		this.id = UUID.randomUUID();
 		this.level = level;
 		this.anchorChunk = anchorChunk;
 		for (Mob mob : mobs) {
@@ -62,8 +82,31 @@ public final class SiegeCluster {
 				continue;
 			}
 			units.put(mob.getUUID(), new SiegeUnitRecord(mob.getUUID()));
+			seenInWorld.add(mob.getUUID());
 			SiegeAiHelper.install(mob, this);
 		}
+		updateTickets();
+	}
+
+	/** 从世界存档恢复；Goal 等实体进世界后再 {@link #onUnitEntityLoaded}。 */
+	SiegeCluster(ServerLevel level, ClusterSnapshot snapshot) {
+		this.id = snapshot.id();
+		this.level = level;
+		this.state = snapshot.state();
+		this.anchorChunk = snapshot.anchorChunk();
+		this.targetChunk = snapshot.targetChunk().orElse(null);
+		this.loadGraceTicks = LOAD_GRACE_TICKS;
+		snapshot.templateId().ifPresent(v -> this.templateId = v);
+		snapshot.templateName().ifPresent(v -> this.templateName = v);
+		snapshot.race().ifPresent(v -> this.race = v);
+		snapshot.tier().ifPresent(v -> this.tier = v);
+		for (UnitSnapshot unit : snapshot.units()) {
+			units.put(unit.mobId(), unit.toRecord());
+		}
+		attackTrackList.addAll(snapshot.attackTrackList());
+		putUuidListMap(attackToUnits, snapshot.attackToUnits());
+		putUuidListMap(globalPlayerMap, snapshot.globalPlayerMap());
+		updateTickets();
 	}
 
 	public UUID getId() {
@@ -88,6 +131,54 @@ public final class SiegeCluster {
 
 	public boolean isDisbanded() {
 		return disbanded;
+	}
+
+	public String getTemplateId() {
+		return templateId;
+	}
+
+	public String getTemplateName() {
+		return templateName;
+	}
+
+	public String getRace() {
+		return race;
+	}
+
+	public String getTier() {
+		return tier;
+	}
+
+	public void setTemplateInfo(String templateId, String templateName, String race, String tier) {
+		this.templateId = templateId;
+		this.templateName = templateName;
+		this.race = race;
+		this.tier = tier;
+	}
+
+	public UUID getSiegeTargetId() {
+		return siegeTargetId;
+	}
+
+	public void setSiegeTargetId(UUID siegeTargetId) {
+		this.siegeTargetId = siegeTargetId;
+	}
+
+	public String describeTemplate() {
+		if (templateId == null) {
+			return "unspecified";
+		}
+		StringBuilder sb = new StringBuilder(templateId);
+		if (templateName != null) {
+			sb.append('/').append(templateName);
+		}
+		if (race != null) {
+			sb.append(" race=").append(race);
+		}
+		if (tier != null) {
+			sb.append(" tier=").append(tier);
+		}
+		return sb.toString();
 	}
 
 	public SiegeUnitRecord getUnit(Mob mob) {
@@ -142,10 +233,27 @@ public final class SiegeCluster {
 			return null;
 		}
 		Entity entity = serverLevel.getEntity(record.getCurrentChaseId());
-		if (entity instanceof LivingEntity living && living.isAlive()) {
+		if (entity instanceof LivingEntity living && living.isAlive() && isInChaseZone(living)) {
 			return living;
 		}
 		return null;
+	}
+
+	/** 追击中心：有进攻区块用 {@code targetChunk}，否则锚点。 */
+	public ChunkPos getChaseCenter() {
+		return targetChunk != null ? targetChunk : anchorChunk;
+	}
+
+	/**
+	 * 目标是否在追击中心的 7×7（切比雪夫 ≤ {@link #FREE_CHASE_RADIUS}）内。
+	 * 区外不追、不还手。
+	 */
+	public boolean isInChaseZone(Entity entity) {
+		ChunkPos center = getChaseCenter();
+		if (entity == null || center == null || entity.level() != level) {
+			return false;
+		}
+		return chebyshevChunkDistance(center, entity.chunkPosition()) <= FREE_CHASE_RADIUS;
 	}
 
 	public void tick() {
@@ -153,6 +261,8 @@ public final class SiegeCluster {
 			return;
 		}
 		tickCounter++;
+		updateTickets();
+		tryBindLoadedUnits();
 		pruneDeadUnits();
 		int living = countLiving();
 		if (living == 0) {
@@ -177,7 +287,8 @@ public final class SiegeCluster {
 			return;
 		}
 		targetChunk = candidates.get(random.nextInt(candidates.size()));
-		enterAssault();
+		updateTickets();
+		enterAssault("assemble_adjacent");
 	}
 
 	/**
@@ -189,11 +300,14 @@ public final class SiegeCluster {
 			return;
 		}
 		this.targetChunk = assaultTarget;
-		enterAssault();
+		updateTickets();
+		enterAssault("spawn_nearest_owned");
 	}
 
-	private void enterAssault() {
+	private void enterAssault(String reason) {
+		SiegeClusterState from = state;
 		state = SiegeClusterState.ASSAULT;
+		logState(from, "ASSAULT", reason);
 		int living = countLiving();
 		if (living <= 2) {
 			disband(true);
@@ -230,12 +344,9 @@ public final class SiegeCluster {
 	}
 
 	private void enterFree(String reason) {
-		FortressBesieged.LOGGER.info(
-				"[siege] enter FREE cluster={} targetChunk={} reason={}",
-				id,
-				targetChunk,
-				reason);
+		SiegeClusterState from = state;
 		state = SiegeClusterState.FREE;
+		logState(from, "FREE", reason);
 		for (UUID mobId : units.keySet()) {
 			Mob mob = resolveMob(mobId);
 			if (mob != null) {
@@ -285,13 +396,16 @@ public final class SiegeCluster {
 		}
 
 		anchorChunk = targetChunk;
+		updateTickets();
 		clearAttackContainers();
 		for (SiegeUnitRecord record : units.values()) {
 			record.clearAssignments();
 			record.setMode(SiegeUnitMode.IDLE);
 		}
 		globalPlayerMap.clear();
+		SiegeClusterState from = state;
 		state = SiegeClusterState.ASSEMBLE;
+		logState(from, "ASSEMBLE", "free_scan_clear");
 	}
 
 	private void handleTargetsLeavingFreeZone() {
@@ -332,7 +446,9 @@ public final class SiegeCluster {
 			if (mob == null || record == null) {
 				continue;
 			}
-			mob.setHealth(mob.getMaxHealth());
+			if (SiegeClusterBehaviorConfig.get().healOnTargetLeaveZone) {
+				mob.setHealth(mob.getMaxHealth());
+			}
 
 			boolean initialWas = leftTargetId.equals(record.getInitialChaseId());
 			boolean currentWas = leftTargetId.equals(record.getCurrentChaseId());
@@ -387,6 +503,9 @@ public final class SiegeCluster {
 			return;
 		}
 		if (!(attacker instanceof LivingEntity living) || !SiegeTargeting.isPlayerFriendly(living)) {
+			return;
+		}
+		if (!isInChaseZone(living)) {
 			return;
 		}
 		SiegeUnitRecord record = units.get(mob.getUUID());
@@ -509,12 +628,22 @@ public final class SiegeCluster {
 
 	public void forceDisband() {
 		if (!disbanded) {
-			disband(true);
+			disband(true, "force");
 		}
 	}
 
 	private void disband(boolean switchToAttack) {
+		disband(switchToAttack, switchToAttack ? "living_le_2" : "no_living");
+	}
+
+	private void disband(boolean switchToAttack, String reason) {
+		SiegeClusterState from = state;
+		logState(from, "DISBAND", reason);
 		disbanded = true;
+		if ("no_living".equals(reason) || "living_le_2".equals(reason)) {
+			SiegeSounds.playVictory(this);
+		}
+		dropTickets();
 		for (UUID mobId : new ArrayList<>(units.keySet())) {
 			Mob mob = resolveMob(mobId);
 			if (mob != null) {
@@ -550,37 +679,155 @@ public final class SiegeCluster {
 	}
 
 	private void pruneDeadUnits() {
+		if (loadGraceTicks > 0) {
+			loadGraceTicks--;
+		}
 		Iterator<Map.Entry<UUID, SiegeUnitRecord>> it = units.entrySet().iterator();
 		while (it.hasNext()) {
 			Map.Entry<UUID, SiegeUnitRecord> entry = it.next();
-			Mob mob = resolveMob(entry.getKey());
-			if (mob == null || !mob.isAlive()) {
-				removeUnitFromAttackMaps(entry.getKey());
-				SiegeAiHelper.discardVanillaBackup(entry.getKey());
-				SiegeClusterManager.unbindMobId(entry.getKey());
+			UUID mobId = entry.getKey();
+			Entity entity = level.getEntity(mobId);
+			if (entity instanceof Mob mob) {
+				if (!mob.isAlive() || mob.isRemoved()) {
+					forgetUnit(mobId);
+					it.remove();
+					continue;
+				}
+				seenInWorld.add(mobId);
+				continue;
+			}
+			// getEntity==null：读档宽限内、或从未出现过且仍在宽限 → 不当死亡
+			if (loadGraceTicks > 0) {
+				continue;
+			}
+			if (!seenInWorld.contains(mobId)) {
+				// 宽限结束仍未进世界：视为离线期间已死
+				forgetUnit(mobId);
 				it.remove();
 			}
+			// 曾经在世界里、现在 null：走出加载区，保留 UUID 等重绑
 		}
+	}
+
+	void onUnitEntityLoaded(Mob mob) {
+		if (disbanded || mob == null) {
+			return;
+		}
+		UUID mobId = mob.getUUID();
+		if (!units.containsKey(mobId) || !mob.isAlive()) {
+			return;
+		}
+		seenInWorld.add(mobId);
+		if (!SiegeAiHelper.hasSiegeGoals(mob)) {
+			SiegeAiHelper.install(mob, this);
+		} else {
+			SiegeClusterManager.bindMob(mob, this);
+			SiegeAiHelper.applyGlowing(mob);
+		}
+	}
+
+	void tryBindLoadedUnits() {
+		if (disbanded) {
+			return;
+		}
+		for (UUID mobId : units.keySet()) {
+			Mob mob = resolveMob(mobId);
+			if (mob != null) {
+				onUnitEntityLoaded(mob);
+			}
+		}
+	}
+
+	void removeDeadUnit(UUID mobId) {
+		if (mobId == null || !units.containsKey(mobId)) {
+			return;
+		}
+		forgetUnit(mobId);
+		units.remove(mobId);
+	}
+
+	Set<UUID> unitIds() {
+		return units.keySet();
+	}
+
+	ClusterSnapshot toSnapshot() {
+		List<UnitSnapshot> unitSnaps = new ArrayList<>();
+		for (SiegeUnitRecord record : units.values()) {
+			unitSnaps.add(UnitSnapshot.from(record));
+		}
+		return new ClusterSnapshot(
+				id,
+				level.dimension().location(),
+				state,
+				anchorChunk,
+				Optional.ofNullable(targetChunk),
+				Optional.ofNullable(templateId),
+				Optional.ofNullable(templateName),
+				Optional.ofNullable(race),
+				Optional.ofNullable(tier),
+				unitSnaps,
+				List.copyOf(attackTrackList),
+				ClusterSnapshot.copyUuidListMap(attackToUnits),
+				ClusterSnapshot.copyUuidListMap(globalPlayerMap));
+	}
+
+	void updateTickets() {
+		if (disbanded) {
+			dropTickets();
+			return;
+		}
+		ChunkPos next = targetChunk != null ? targetChunk : anchorChunk;
+		if (next == null) {
+			dropTickets();
+			return;
+		}
+		if (next.equals(ticketCenter)) {
+			return;
+		}
+		dropTickets();
+		ticketCenter = next;
+		SiegeChunkTickets.retain(level, ticketCenter);
+	}
+
+	void dropTickets() {
+		if (ticketCenter != null) {
+			SiegeChunkTickets.release(level, ticketCenter);
+			ticketCenter = null;
+		}
+	}
+
+	private void forgetUnit(UUID mobId) {
+		removeUnitFromAttackMaps(mobId);
+		SiegeAiHelper.discardVanillaBackup(mobId);
+		SiegeClusterManager.unbindMobId(mobId);
+		seenInWorld.remove(mobId);
+	}
+
+	private static void putUuidListMap(Map<UUID, List<UUID>> dest, Map<UUID, List<UUID>> src) {
+		dest.clear();
+		if (src == null) {
+			return;
+		}
+		for (Map.Entry<UUID, List<UUID>> entry : src.entrySet()) {
+			dest.put(entry.getKey(), new ArrayList<>(entry.getValue()));
+		}
+	}
+
+	private void logState(SiegeClusterState from, String to, String reason) {
+		SiegeSpawnMonitor.state(
+				id, from, to, reason, level, tickCounter, anchorChunk, targetChunk, countLiving());
 	}
 
 	private int countLiving() {
-		int n = 0;
-		for (UUID id : units.keySet()) {
-			if (resolveMob(id) != null) {
-				n++;
-			}
-		}
-		return n;
+		return units.size();
+	}
+
+	public int getLivingCount() {
+		return countLiving();
 	}
 
 	private List<UUID> livingUnitIds() {
-		List<UUID> ids = new ArrayList<>();
-		for (UUID id : units.keySet()) {
-			if (resolveMob(id) != null) {
-				ids.add(id);
-			}
-		}
-		return ids;
+		return new ArrayList<>(units.keySet());
 	}
 
 	private Mob resolveMob(UUID id) {
@@ -617,7 +864,7 @@ public final class SiegeCluster {
 		int minZ = (center.z - radius) << 4;
 		int maxZ = ((center.z + radius) << 4) + 16;
 		AABB box = new AABB(minX, level.getMinY(), minZ, maxX, level.getMaxY() + 1, maxZ);
-		List<LivingEntity> found = level.getEntitiesOfClass(LivingEntity.class, box, SiegeTargeting::isPlayerFriendly);
+		List<LivingEntity> found = level.getEntitiesOfClass(LivingEntity.class, box, SiegeTargeting::isValidAttackTarget);
 		found.removeIf(e -> chebyshevChunkDistance(center, e.chunkPosition()) > radius);
 		return found;
 	}

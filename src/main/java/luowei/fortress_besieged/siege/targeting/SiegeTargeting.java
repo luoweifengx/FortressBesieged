@@ -42,7 +42,16 @@ public final class SiegeTargeting {
 		return false;
 	}
 
+	/**
+	 * 可作为围城/野外攻击目标：玩家阵营，且跳过创造、旁观。
+	 */
 	public static boolean isValidAttackTarget(LivingEntity entity) {
-		return isPlayerFriendly(entity);
+		if (!isPlayerFriendly(entity)) {
+			return false;
+		}
+		if (entity instanceof Player player) {
+			return !player.isSpectator() && !player.isCreative();
+		}
+		return true;
 	}
 }

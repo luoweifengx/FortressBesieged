@@ -1,6 +1,5 @@
 package luowei.fortress_besieged.siege;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 import java.util.UUID;
@@ -18,15 +17,20 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.world.level.ChunkPos;
 
 import luowei.fortress_besieged.siege.pbs.PbsTerritoryAdapter;
+import luowei.fortress_besieged.siege.structure.MedievalCastleBuilder;
+import luowei.fortress_besieged.siege.spawn.SiegeClusterConfig;
 import luowei.fortress_besieged.siege.spawn.SiegeClusterSpawner;
+import luowei.fortress_besieged.siege.spawn.SiegeClusterTemplate;
 import luowei.fortress_besieged.siege.spawn.SiegeSpawnConfig;
-import luowei.fortress_besieged.siege.spawn.SiegeSpawnRecipe;
-import luowei.fortress_besieged.siege.spawn.SiegeSpawnRecipes;
+import luowei.fortress_besieged.siege.spawn.SiegeSpawnMonitor;
 import luowei.fortress_besieged.siege.spawn.SiegeSpawnSiteSelector;
 import luowei.fortress_besieged.siege.spawn.SiegeTargetSampler;
+import luowei.fortress_besieged.siege.spawn.SiegeTemplateSelector;
 import luowei.player_block_status.lib.api.PlayerBlockStatusLib;
 
 /**
@@ -38,17 +42,18 @@ import luowei.player_block_status.lib.api.PlayerBlockStatusLib;
  * /siege spawn self [recipe]      — executor player UUID
  * /siege sites [uuid]             — preview candidates + Bernoulli roll (E = n×p)
  * /siege poll                     — list siege target UUIDs
- * /siege recipes                  — list recipes (id, count, weighted units)
+ * /siege recipes                  — list siege and wilderness templates (and legacy aliases)
  * /siege create [chunkRadius]     — legacy: absorb nearby natural monsters
+ * /siege castle                   — place the blueprint courtyard castle in front of the player
  * /siege status
  * /siege disband
  * </pre>
+ * {@code recipe} 可为模板 id，或旧配方 {@code default}/{@code light}/{@code heavy}
+ *（default=按阶段抽取，light=路边野尸，heavy=一群亡灵）。
  */
 public final class SiegeCommands {
 	private static final SuggestionProvider<CommandSourceStack> RECIPE_SUGGESTIONS = (ctx, builder) ->
-			SharedSuggestionProvider.suggest(
-					SiegeSpawnRecipes.all().stream().map(SiegeSpawnRecipe::id),
-					builder);
+			SharedSuggestionProvider.suggest(SiegeTemplateSelector.suggestionIds(), builder);
 
 	private SiegeCommands() {
 	}
@@ -57,9 +62,9 @@ public final class SiegeCommands {
 		dispatcher.register(Commands.literal("siege")
 				.requires(source -> source.hasPermission(2))
 				.then(Commands.literal("spawn")
-						.executes(ctx -> spawnWave(ctx.getSource(), SiegeSpawnRecipes.DEFAULT_ID))
+						.executes(ctx -> spawnWave(ctx.getSource(), SiegeTemplateSelector.LEGACY_DEFAULT))
 						.then(Commands.literal("self")
-								.executes(ctx -> spawnSelf(ctx.getSource(), SiegeSpawnRecipes.DEFAULT_ID))
+								.executes(ctx -> spawnSelf(ctx.getSource(), SiegeTemplateSelector.LEGACY_DEFAULT))
 								.then(Commands.argument("recipe", StringArgumentType.word())
 										.suggests(RECIPE_SUGGESTIONS)
 										.executes(ctx -> spawnSelf(ctx.getSource(),
@@ -69,7 +74,7 @@ public final class SiegeCommands {
 										.executes(ctx -> spawnFor(
 												ctx.getSource(),
 												UuidArgument.getUuid(ctx, "target"),
-												SiegeSpawnRecipes.DEFAULT_ID))
+												SiegeTemplateSelector.LEGACY_DEFAULT))
 										.then(Commands.argument("recipe", StringArgumentType.word())
 												.suggests(RECIPE_SUGGESTIONS)
 												.executes(ctx -> spawnFor(
@@ -93,41 +98,50 @@ public final class SiegeCommands {
 								.executes(ctx -> createFromNearby(
 										ctx.getSource(),
 										IntegerArgumentType.getInteger(ctx, "chunkRadius")))))
+				.then(Commands.literal("castle")
+						.executes(ctx -> placeCastle(ctx.getSource())))
 				.then(Commands.literal("status")
-						.executes(ctx -> {
-							ctx.getSource().sendSuccess(
-									() -> Component.literal("Active siege clusters: " + SiegeClusterManager.clusterCount()),
-									false);
-							return SiegeClusterManager.clusterCount();
-						}))
+						.executes(ctx -> listStatus(ctx.getSource())))
 				.then(Commands.literal("disband")
 						.executes(ctx -> disbandAll(ctx.getSource()))));
 	}
 
-	/** Sample a proportional subset of the poll list (same idea as natural waves). */
-	private static int spawnWave(CommandSourceStack source, String recipeId) {
-		SiegeSpawnRecipe recipe;
-		try {
-			recipe = SiegeSpawnRecipes.require(recipeId);
-		} catch (IllegalArgumentException e) {
-			source.sendFailure(Component.literal(e.getMessage()));
+	private static int placeCastle(CommandSourceStack source) {
+		ServerPlayer player = source.getPlayer();
+		if (player == null) {
+			source.sendFailure(Component.literal("Player required"));
 			return 0;
 		}
+		Direction facing = player.getDirection();
+		BlockPos gate = player.blockPosition().relative(facing, 4);
+		int placed = MedievalCastleBuilder.place(source.getLevel(), gate, facing);
+		source.sendSuccess(() -> Component.literal(
+				"Placed courtyard castle (" + placed + " blocks) facing " + facing.getName()), true);
+		return placed;
+	}
+
+	/** Sample a proportional subset of the poll list (command waves only). */
+	private static int spawnWave(CommandSourceStack source, String recipeId) {
 		ServerLevel level = source.getLevel();
 		Random random = new Random(level.random.nextLong());
+		List<UUID> poll = PbsTerritoryAdapter.listSiegeTargets(source.getServer());
 		List<UUID> targets = SiegeTargetSampler.sampleWaveTargets(source.getServer(), level, random);
 		if (targets.isEmpty()) {
-			source.sendFailure(Component.literal("Siege target poll is empty (no orgs / solo players)"));
+			if (poll.isEmpty()) {
+				source.sendFailure(Component.literal("Siege target poll is empty (no orgs / solo players)"));
+			} else {
+				source.sendFailure(Component.literal(
+						"No siegeable targets (all still in new-player protection, days<"
+								+ SiegeSpawnConfig.NEW_PLAYER_PROTECTION_DAYS + ")"));
+			}
 			return 0;
 		}
 		source.sendSuccess(() -> Component.literal(
-				"Wave sample " + targets.size() + "/" + PbsTerritoryAdapter.listSiegeTargets(source.getServer()).size()
+				"Wave sample " + targets.size() + "/" + poll.size()
 						+ " (ratio=" + SiegeSpawnConfig.TARGET_SAMPLE_RATIO + ")"), false);
 		int total = 0;
 		for (UUID target : targets) {
-			SiegeClusterSpawner.SpawnResult result = SiegeClusterSpawner.spawnForTarget(level, target, recipe, random);
-			reportSpawn(source, result);
-			total += result.clusters().size();
+			total += spawnFor(source, target, recipeId, random);
 		}
 		return total;
 	}
@@ -142,16 +156,25 @@ public final class SiegeCommands {
 	}
 
 	private static int spawnFor(CommandSourceStack source, UUID targetId, String recipeId) {
-		SiegeSpawnRecipe recipe;
+		ServerLevel level = source.getLevel();
+		Random random = new Random(level.random.nextLong());
+		return spawnFor(source, targetId, recipeId, random);
+	}
+
+	private static int spawnFor(CommandSourceStack source, UUID targetId, String recipeId, Random random) {
+		SiegeSpawnMonitor.info(
+				"picked player={} dim={} gameTime={} source=command recipe={}",
+				SiegeSpawnMonitor.target(source.getServer(), targetId),
+				SiegeSpawnMonitor.dim(source.getLevel()),
+				source.getLevel().getGameTime(),
+				recipeId);
+		SiegeClusterSpawner.SpawnResult result;
 		try {
-			recipe = SiegeSpawnRecipes.require(recipeId);
+			result = SiegeClusterSpawner.spawnById(source.getLevel(), targetId, recipeId, random);
 		} catch (IllegalArgumentException e) {
 			source.sendFailure(Component.literal(e.getMessage()));
 			return 0;
 		}
-		ServerLevel level = source.getLevel();
-		Random random = new Random(level.random.nextLong());
-		SiegeClusterSpawner.SpawnResult result = SiegeClusterSpawner.spawnForTarget(level, targetId, recipe, random);
 		reportSpawn(source, result);
 		return result.clusters().size();
 	}
@@ -171,6 +194,7 @@ public final class SiegeCommands {
 		}
 		for (SiegeCluster cluster : result.clusters()) {
 			source.sendSuccess(() -> Component.literal("  cluster " + cluster.getId()
+					+ " " + cluster.describeTemplate()
 					+ " state=" + cluster.getState()
 					+ " anchor=" + formatChunk(cluster.getAnchorChunk())
 					+ " target=" + formatChunk(cluster.getTargetChunk())), false);
@@ -218,11 +242,20 @@ public final class SiegeCommands {
 	private static int listPoll(CommandSourceStack source) {
 		var server = source.getServer();
 		List<UUID> targets = PbsTerritoryAdapter.listSiegeTargets(server);
-		int sample = SiegeTargetSampler.sampleCount(targets.size());
+		int eligibleCount = 0;
+		for (UUID id : targets) {
+			if (SiegePlayerProtection.isTimeToBesiege(server, id)) {
+				eligibleCount++;
+			}
+		}
+		int eligible = eligibleCount;
+		int sample = SiegeTargetSampler.sampleCount(eligible);
 		source.sendSuccess(
 				() -> Component.literal("EntityPollList order (" + targets.size() + ") [solo player | organization]"
+						+ " siegeable=" + eligible
 						+ " waveSample≈" + sample
-						+ " (ratio=" + SiegeSpawnConfig.TARGET_SAMPLE_RATIO + "):"),
+						+ " (ratio=" + SiegeSpawnConfig.TARGET_SAMPLE_RATIO
+						+ ", protection=" + SiegeSpawnConfig.NEW_PLAYER_PROTECTION_DAYS + "d):"),
 				false);
 		int i = 0;
 		for (UUID id : targets) {
@@ -234,28 +267,61 @@ public final class SiegeCommands {
 	}
 
 	private static String describePollEntry(MinecraftServer server, UUID id) {
+		boolean ready = SiegePlayerProtection.isTimeToBesiege(server, id);
+		int days = SiegePlayerProtection.daysInGame(server, id);
+		String protection = ready
+				? "siegeable days=" + days
+				: "protected days=" + days + "/" + SiegeSpawnConfig.NEW_PLAYER_PROTECTION_DAYS;
 		var org = PlayerBlockStatusLib.queryOrganization(server, id);
 		if (org.isPresent()) {
-			return "(org name=" + org.get().name() + ")";
+			return "(org name=" + org.get().name() + " owner=" + org.get().owner() + " " + protection + ")";
 		}
 		var memberOf = PlayerBlockStatusLib.queryPlayerOrganization(server, id);
 		if (memberOf.isPresent()) {
-			return "(player in org " + memberOf.get() + " — unexpected in poll)";
+			return "(player in org " + memberOf.get() + " — unexpected in poll, " + protection + ")";
 		}
-		return "(solo player)";
+		return "(solo player, " + protection + ")";
 	}
 
 	private static int listRecipes(CommandSourceStack source) {
-		for (SiegeSpawnRecipe recipe : SiegeSpawnRecipes.all()) {
-			List<String> parts = new ArrayList<>();
-			for (var entry : recipe.entries()) {
-				parts.add(entry.unit().id() + "×" + entry.weight());
-			}
+		source.sendSuccess(() -> Component.literal("Aliases: default=stage roll, light=undead_roadkill, heavy=undead_host"), false);
+		source.sendSuccess(() -> Component.literal("Siege (" + SiegeClusterConfig.FILE_NAME + "):"), false);
+		int n = listTemplates(source, SiegeClusterConfig.siege());
+		source.sendSuccess(() -> Component.literal("Wilderness (" + SiegeClusterConfig.FILE_NAME_WILDERNESS + "):"), false);
+		n += listTemplates(source, SiegeClusterConfig.wilderness());
+		return n;
+	}
+
+	private static int listTemplates(CommandSourceStack source, SiegeClusterConfig config) {
+		int n = 0;
+		for (SiegeClusterTemplate template : config.templates()) {
+			n++;
+			SiegeClusterTemplate row = template;
 			source.sendSuccess(() -> Component.literal(
-					recipe.id() + " count=" + recipe.totalCount()
-							+ " units=[" + String.join(", ", parts) + "]"), false);
+					"  " + row.id() + " " + row.name()
+							+ " race=" + row.race()
+							+ " tier=" + row.tier()
+							+ " count=" + row.count().min() + "-" + row.count().max()
+							+ " species=" + row.species().size()), false);
 		}
-		return SiegeSpawnRecipes.all().size();
+		return n;
+	}
+
+	private static int listStatus(CommandSourceStack source) {
+		int count = SiegeClusterManager.clusterCount();
+		source.sendSuccess(() -> Component.literal("Active siege clusters: " + count), false);
+		for (SiegeCluster cluster : SiegeClusterManager.clusters()) {
+			if (cluster.getLevel() != source.getLevel()) {
+				continue;
+			}
+			source.sendSuccess(() -> Component.literal("  " + cluster.getId()
+					+ " " + cluster.describeTemplate()
+					+ " state=" + cluster.getState()
+					+ " m=" + cluster.getLivingCount()
+					+ " anchor=" + formatChunk(cluster.getAnchorChunk())
+					+ " target=" + formatChunk(cluster.getTargetChunk())), false);
+		}
+		return count;
 	}
 
 	private static int createFromNearby(CommandSourceStack source, int radius) {
