@@ -6,6 +6,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 
+import net.minecraft.world.Difficulty;
+
 /**
  * One configurable siege cluster template (JSON {@code clusters[]} entry).
  */
@@ -29,7 +31,6 @@ public final class SiegeClusterTemplate {
 	private final double easterEggChance;
 	private final Map<String, String> easterEggSlots;
 	private final LootSpec loot;
-	private final int speciesWeightTotal;
 
 	public SiegeClusterTemplate(
 			String id,
@@ -93,11 +94,6 @@ public final class SiegeClusterTemplate {
 		this.easterEggChance = Math.max(0.0D, easterEggChance);
 		this.easterEggSlots = easterEggSlots == null ? Map.of() : Map.copyOf(easterEggSlots);
 		this.loot = loot == null ? LootSpec.NONE : loot;
-		int sw = 0;
-		for (SpeciesSpec spec : this.species) {
-			sw += Math.max(0, spec.weight());
-		}
-		this.speciesWeightTotal = sw;
 	}
 
 	private static String normalizeDimension(String dimension, String race) {
@@ -199,25 +195,36 @@ public final class SiegeClusterTemplate {
 	}
 
 	public int rollCount(Random random) {
+		return rollCount(random, null);
+	}
+
+	public int rollCount(Random random, Difficulty difficulty) {
+		CountSpec spec = count.forDifficulty(difficulty);
 		int rolled;
-		if (count.buckets() != null && !count.buckets().isEmpty()) {
-			CountBucket bucket = pickBucket(random);
+		if (spec.buckets() != null && !spec.buckets().isEmpty()) {
+			CountBucket bucket = pickBucket(spec, random);
 			rolled = WeightedPicker.inRange(bucket.min(), bucket.max(), random);
 		} else {
-			rolled = WeightedPicker.inRange(count.min(), count.max(), random);
+			rolled = WeightedPicker.inRange(spec.min(), spec.max(), random);
 		}
 		return Math.max(MIN_COUNT, rolled);
 	}
 
-	public SpeciesSpec rollSpecies(Random random) {
-		if (species.isEmpty() || speciesWeightTotal <= 0) {
+	public SpeciesSpec rollSpecies(Random random, long dayIndex) {
+		int total = 0;
+		for (SpeciesSpec spec : species) {
+			if (speciesUnlocked(spec, dayIndex)) {
+				total += spec.weight();
+			}
+		}
+		if (total <= 0) {
 			return null;
 		}
-		int roll = random.nextInt(speciesWeightTotal);
+		int roll = random.nextInt(total);
 		int acc = 0;
-		SpeciesSpec last = species.get(species.size() - 1);
+		SpeciesSpec last = null;
 		for (SpeciesSpec spec : species) {
-			if (spec.weight() <= 0) {
+			if (!speciesUnlocked(spec, dayIndex)) {
 				continue;
 			}
 			acc += spec.weight();
@@ -229,18 +236,32 @@ public final class SiegeClusterTemplate {
 		return last;
 	}
 
-	private CountBucket pickBucket(Random random) {
+	private static boolean speciesUnlocked(SpeciesSpec spec, long dayIndex) {
+		if (spec == null || spec.weight() <= 0) {
+			return false;
+		}
+		if (isVindicator(spec.entity()) && dayIndex < SiegeSpawnConfig.VINDICATOR_MIN_DAY_INDEX) {
+			return false;
+		}
+		return true;
+	}
+
+	private static boolean isVindicator(String entity) {
+		return "minecraft:vindicator".equals(entity) || "vindicator".equals(entity);
+	}
+
+	private static CountBucket pickBucket(CountSpec spec, Random random) {
 		int total = 0;
-		for (CountBucket bucket : count.buckets()) {
+		for (CountBucket bucket : spec.buckets()) {
 			total += Math.max(0, bucket.weight());
 		}
 		if (total <= 0) {
-			return count.buckets().get(0);
+			return spec.buckets().get(0);
 		}
 		int roll = random.nextInt(total);
 		int acc = 0;
-		CountBucket last = count.buckets().get(count.buckets().size() - 1);
-		for (CountBucket bucket : count.buckets()) {
+		CountBucket last = spec.buckets().get(spec.buckets().size() - 1);
+		for (CountBucket bucket : spec.buckets()) {
 			if (bucket.weight() <= 0) {
 				continue;
 			}
@@ -253,9 +274,40 @@ public final class SiegeClusterTemplate {
 		return last;
 	}
 
-	public record CountSpec(int min, int max, List<CountBucket> buckets) {
+	public record CountSpec(int min, int max, List<CountBucket> buckets, Map<String, CountSpec> byDifficulty) {
 		public CountSpec {
+			int lo = Math.min(min, max);
+			int hi = Math.max(min, max);
+			min = lo;
+			max = hi;
 			buckets = buckets == null ? List.of() : List.copyOf(buckets);
+			if (byDifficulty == null || byDifficulty.isEmpty()) {
+				byDifficulty = Map.of();
+			} else {
+				Map<String, CountSpec> copy = new LinkedHashMap<>();
+				for (Map.Entry<String, CountSpec> entry : byDifficulty.entrySet()) {
+					if (entry.getKey() == null || entry.getValue() == null) {
+						continue;
+					}
+					CountSpec spec = entry.getValue();
+					copy.put(entry.getKey(), new CountSpec(spec.min(), spec.max(), spec.buckets(), Map.of()));
+				}
+				byDifficulty = Map.copyOf(copy);
+			}
+		}
+
+		public CountSpec(int min, int max, List<CountBucket> buckets) {
+			this(min, max, buckets, Map.of());
+		}
+
+		public CountSpec forDifficulty(Difficulty difficulty) {
+			String key = switch (difficulty == null ? Difficulty.NORMAL : difficulty) {
+				case EASY -> "easy";
+				case HARD -> "hard";
+				default -> "normal";
+			};
+			CountSpec override = byDifficulty.get(key);
+			return override == null ? this : override;
 		}
 	}
 
@@ -312,10 +364,10 @@ public final class SiegeClusterTemplate {
 		/** Used when a cluster JSON omits {@code loot}. Explicit {@code chance: 0} still disables. */
 		public static LootSpec forTier(String tier) {
 			return switch (tier == null ? "" : tier) {
-				case "roadkill" -> new LootSpec("minecraft:emerald", 0.1D, 1, 1);
-				case "small" -> new LootSpec("minecraft:emerald", 0.2D, 1, 2);
-				case "host" -> new LootSpec("minecraft:emerald", 0.5D, 1, 4);
-				case "legion" -> new LootSpec("minecraft:emerald", 0.7D, 2, 8);
+				case "roadkill" -> new LootSpec("minecraft:emerald", 0.5D, 1, 1);
+				case "small" -> new LootSpec("minecraft:emerald", 0.8D, 1, 2);
+				case "host" -> new LootSpec("minecraft:emerald", 0.9D, 1, 4);
+				case "legion" -> new LootSpec("minecraft:emerald", 0.1D, 2, 6);
 				case "hell" -> new LootSpec("minecraft:emerald", 0.3D, 10, 30);
 				default -> NONE;
 			};
@@ -345,6 +397,17 @@ public final class SiegeClusterTemplate {
 			countJson.put("buckets", buckets);
 		}
 		json.put("count", countJson);
+		if (!count.byDifficulty().isEmpty()) {
+			Map<String, Object> byDiff = new LinkedHashMap<>();
+			for (Map.Entry<String, CountSpec> entry : count.byDifficulty().entrySet()) {
+				CountSpec spec = entry.getValue();
+				Map<String, Object> row = new LinkedHashMap<>();
+				row.put("min", spec.min());
+				row.put("max", spec.max());
+				byDiff.put(entry.getKey(), row);
+			}
+			json.put("countByDifficulty", byDiff);
+		}
 		List<Map<String, Object>> speciesJson = new ArrayList<>();
 		for (SpeciesSpec spec : species) {
 			Map<String, Object> row = new LinkedHashMap<>();

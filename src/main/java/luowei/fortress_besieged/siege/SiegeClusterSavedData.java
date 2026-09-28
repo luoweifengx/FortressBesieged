@@ -78,19 +78,23 @@ public final class SiegeClusterSavedData extends SavedData {
 	).apply(instance, ClusterSnapshot::new));
 
 	private static final Codec<SiegeClusterSavedData> CODEC = RecordCodecBuilder.create(instance -> instance.group(
-			CLUSTER_CODEC.listOf().fieldOf("clusters").forGetter(SiegeClusterSavedData::clusters)
+			CLUSTER_CODEC.listOf().fieldOf("clusters").forGetter(SiegeClusterSavedData::clusters),
+			UUIDUtil.CODEC.listOf().optionalFieldOf("pendingDiscard", List.of())
+					.forGetter(SiegeClusterSavedData::pendingDiscard)
 	).apply(instance, SiegeClusterSavedData::new));
 
 	public static final SavedDataType<SiegeClusterSavedData> TYPE = new SavedDataType<>(
 			ID,
-			ctx -> new SiegeClusterSavedData(List.of()),
+			ctx -> new SiegeClusterSavedData(List.of(), List.of()),
 			ctx -> CODEC,
 			DataFixTypes.SAVED_DATA_COMMAND_STORAGE);
 
 	private List<ClusterSnapshot> clusters;
+	private List<UUID> pendingDiscard;
 
-	private SiegeClusterSavedData(List<ClusterSnapshot> clusters) {
+	private SiegeClusterSavedData(List<ClusterSnapshot> clusters, List<UUID> pendingDiscard) {
 		this.clusters = clusters == null ? List.of() : List.copyOf(clusters);
+		this.pendingDiscard = pendingDiscard == null ? List.of() : List.copyOf(pendingDiscard);
 	}
 
 	public static SiegeClusterSavedData get(ServerLevel level) {
@@ -101,8 +105,13 @@ public final class SiegeClusterSavedData extends SavedData {
 		return clusters;
 	}
 
-	public void replace(List<ClusterSnapshot> next) {
+	public List<UUID> pendingDiscard() {
+		return pendingDiscard;
+	}
+
+	public void replace(List<ClusterSnapshot> next, List<UUID> pending) {
 		this.clusters = next == null ? List.of() : List.copyOf(next);
+		this.pendingDiscard = pending == null ? List.of() : List.copyOf(pending);
 		setDirty();
 	}
 

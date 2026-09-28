@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "hooks": {
+    "afterFileEdit": [
+      {
+        "command": "node .cursor/hooks/ask-canvas-analysis.js afterFileEdit"
+      }
+    ],
+    "stop": [
+      {
+        "command": "node .cursor/hooks/ask-canvas-analysis.js stop",
+        "loop_limit": 1
+      }
+    ]
+  }
+}

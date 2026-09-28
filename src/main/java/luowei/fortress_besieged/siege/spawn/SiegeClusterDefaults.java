@@ -15,7 +15,8 @@ import luowei.fortress_besieged.siege.spawn.SiegeClusterTemplate.StatsSpec;
 /**
  * Default contents for siege and wilderness json: 4 stages + 亡灵 5 档 + 掠夺者 4 档 + 烬军 5 档.
  * Siege numbers match {@code docs/siege-cluster-templates.md}.
- * Wilderness uses the same templates with smaller counts and a flat 40% attempt chance.
+ * Wilderness uses the same templates with smaller Easy counts, Normal ×1.4 /
+ * Hard ×1.9, and attempt chance 1.0 after the away timer.
  */
 public final class SiegeClusterDefaults {
 	private SiegeClusterDefaults() {
@@ -25,20 +26,16 @@ public final class SiegeClusterDefaults {
 		List<SiegeProgression.Stage> stages = new ArrayList<>();
 		stages.add(new SiegeProgression.Stage(
 				"journey", "旅途", "always", false,
-				weights("roadkill", 0.7, "small", 0.3),
-				new SiegeProgression.SpawnWindow(7000, 18000, 0.10f)));
+				weights("roadkill", 0.7, "small", 0.3)));
 		stages.add(new SiegeProgression.Stage(
 				"homeland", "故土", "host", false,
-				weights("small", 0.5, "roadkill", 0.2, "host", 0.3),
-				new SiegeProgression.SpawnWindow(10000, 22000, 0.12f)));
+				weights("small", 0.5, "roadkill", 0.2, "host", 0.3)));
 		stages.add(new SiegeProgression.Stage(
 				"hard", "困难", "legion", false,
-				weights("legion", 0.5, "host", 0.3, "small", 0.15, "roadkill", 0.05),
-				new SiegeProgression.SpawnWindow(11000, 19000, 0.15f)));
+				weights("legion", 0.5, "host", 0.3, "small", 0.15, "roadkill", 0.05)));
 		stages.add(new SiegeProgression.Stage(
 				"end", "终末", "legion", true,
-				weights("legion", 0.708, "host", 0.2, "small", 0.022, "roadkill", 0.07),
-				new SiegeProgression.SpawnWindow(16000, 23000, 0.20f)));
+				weights("legion", 0.708, "host", 0.2, "small", 0.022, "roadkill", 0.07)));
 		return new SiegeProgression(stages);
 	}
 
@@ -89,23 +86,52 @@ public final class SiegeClusterDefaults {
 		return list;
 	}
 
+	/**
+	 * Easy uses the small wilderness range. Normal ×1.4 / Hard ×1.9 via
+	 * {@code countByDifficulty}; missing easy key falls back to {@code count}.
+	 */
 	private static CountSpec wildernessCount(String tier) {
-		return switch (tier == null ? "" : tier) {
+		CountSpec easy = switch (tier == null ? "" : tier) {
 			case "roadkill" -> new CountSpec(3, 5, List.of());
 			case "small" -> new CountSpec(6, 8, List.of());
 			case "host", "legion" -> new CountSpec(10, 15, List.of());
 			default -> new CountSpec(10, 15, List.of());
 		};
+		return new CountSpec(easy.min(), easy.max(), easy.buckets(), Map.of(
+				"normal", scaledWildernessCount(easy, WildernessSpawnConfig.COUNT_MULTIPLIER_NORMAL),
+				"hard", scaledWildernessCount(easy, WildernessSpawnConfig.COUNT_MULTIPLIER_HARD)));
+	}
+
+	private static CountSpec scaledWildernessCount(CountSpec easy, double multiplier) {
+		return new CountSpec(
+				scaleCount(easy.min(), multiplier),
+				scaleCount(easy.max(), multiplier),
+				List.of());
+	}
+
+	private static int scaleCount(int value, double multiplier) {
+		return Math.max(SiegeClusterTemplate.MIN_COUNT, (int) Math.round(value * multiplier));
+	}
+
+	/** Overworld siege sizes: normal in {@code count}, easy ×0.6 / hard ×1.4. */
+	private static CountSpec scaledCount(int min, int max) {
+		return scaledCount(min, max, List.of());
+	}
+
+	private static CountSpec scaledCount(int min, int max, List<CountBucket> buckets) {
+		return new CountSpec(min, max, buckets, Map.of(
+				"easy", new CountSpec(scaleCount(min, 0.6D), scaleCount(max, 0.6D), List.of()),
+				"hard", new CountSpec(scaleCount(min, 1.4D), scaleCount(max, 1.4D), List.of())));
 	}
 
 	private static SiegeClusterTemplate undeadRoadkill() {
 		return new SiegeClusterTemplate(
 				"undead_roadkill", "路边野尸", "undead", "roadkill", "mixed",
-				new CountSpec(5, 100, List.of(
-						new CountBucket(5, 15, 40),
-						new CountBucket(16, 40, 35),
-						new CountBucket(41, 70, 18),
-						new CountBucket(71, 100, 7))),
+				scaledCount(5, 60, List.of(
+						new CountBucket(5, 8, 40),
+						new CountBucket(9, 14, 35),
+						new CountBucket(15, 22, 18),
+						new CountBucket(23, 60, 7))),
 				List.of(
 						species("minecraft:zombie", 70),
 						species("minecraft:husk", 10),
@@ -131,22 +157,22 @@ public final class SiegeClusterDefaults {
 						slot("boots", "empty", 82,
 								"minecraft:leather_boots", 14,
 								"minecraft:golden_boots", 4),
-						slot("mainHand", "empty", 55,
-								"minecraft:wooden_shovel", 15,
-								"minecraft:wooden_axe", 12,
-								"minecraft:wooden_pickaxe", 12,
-								"minecraft:iron_shovel", 4,
-								"minecraft:iron_pickaxe", 2),
+						slot("mainHand", "empty", 20,
+								"minecraft:wooden_shovel", 27,
+								"minecraft:wooden_axe", 21,
+								"minecraft:wooden_pickaxe", 21,
+								"minecraft:iron_shovel", 7,
+								"minecraft:iron_pickaxe", 4),
 						slot("offHand", "empty", 100)),
 				durability(50, 35, 12, 3),
 				new EnchantSpec(0.0D, 0.0D, 0, 0),
-				null, 0.0D, 0.0D, Map.of(), loot(0.1D, 1, 1));
+				null, 0.0D, 0.0D, Map.of(), loot(0.5D, 1, 1));
 	}
 
 	private static SiegeClusterTemplate undeadWarbandSmall() {
 		return new SiegeClusterTemplate(
 				"undead_warband_small", "小股亡灵", "undead", "small", "medium",
-				new CountSpec(15, 20, List.of()),
+				scaledCount(4, 15),
 				List.of(
 						species("minecraft:zombie", 62),
 						species("minecraft:husk", 10),
@@ -154,7 +180,7 @@ public final class SiegeClusterDefaults {
 						species("minecraft:stray", 5),
 						species("minecraft:zombie_villager", 5)),
 				stats(
-						nums("12", 35, "14", 40, "16", 25),
+						nums("6", 40, "8", 45, "10", 15),
 						speedSmall(),
 						nums("2.0", 60, "3.0", 40)),
 				slots(
@@ -178,22 +204,28 @@ public final class SiegeClusterDefaults {
 								"minecraft:golden_boots", 7,
 								"minecraft:chainmail_boots", 6,
 								"minecraft:iron_boots", 5),
-						slot("mainHand", "empty", 15,
-								"minecraft:wooden_sword", 40,
-								"minecraft:stone_sword", 25,
-								"minecraft:iron_sword", 18,
-								"minecraft:golden_sword", 2),
+						slot("mainHand", "empty", 10,
+								"minecraft:wooden_sword", 18,
+								"minecraft:stone_sword", 12,
+								"minecraft:iron_sword", 8,
+								"minecraft:golden_sword", 2,
+								"minecraft:wooden_pickaxe", 22,
+								"minecraft:iron_pickaxe", 11,
+								"minecraft:wooden_axe", 7,
+								"minecraft:iron_axe", 3,
+								"minecraft:wooden_shovel", 5,
+								"minecraft:iron_shovel", 2),
 						slot("mainHandRanged", "empty", 15, "minecraft:bow", 85),
 						slot("offHand", "empty", 100)),
 				durability(30, 40, 25, 5),
 				new EnchantSpec(0.05D, 0.08D, 5, 12),
-				null, 0.0D, 0.0D, Map.of(), loot(0.2D, 1, 2));
+				null, 0.0D, 0.0D, Map.of(), loot(0.8D, 1, 2));
 	}
 
 	private static SiegeClusterTemplate undeadHost() {
 		return new SiegeClusterTemplate(
 				"undead_host", "一群亡灵", "undead", "host", "medium",
-				new CountSpec(28, 32, List.of()),
+				scaledCount(5, 16),
 				List.of(
 						species("minecraft:zombie", 55),
 						species("minecraft:husk", 8),
@@ -202,7 +234,7 @@ public final class SiegeClusterDefaults {
 						species("minecraft:drowned", 5),
 						species("minecraft:witch", 2)),
 				stats(
-						nums("20", 25, "24", 35, "28", 25, "32", 15),
+						nums("8", 25, "10", 35, "12", 25, "14", 15),
 						speedHost(),
 						nums("3.0", 100)),
 				slots(
@@ -227,10 +259,14 @@ public final class SiegeClusterDefaults {
 								"minecraft:iron_boots", 62,
 								"minecraft:diamond_boots", 2),
 						slot("mainHand", "empty", 5,
-								"minecraft:wooden_sword", 8,
-								"minecraft:stone_sword", 12,
-								"minecraft:iron_sword", 72,
-								"minecraft:diamond_sword", 3),
+								"minecraft:iron_sword", 32,
+								"minecraft:stone_sword", 7,
+								"minecraft:wooden_sword", 4,
+								"minecraft:diamond_sword", 2,
+								"minecraft:iron_pickaxe", 28,
+								"minecraft:diamond_pickaxe", 5,
+								"minecraft:iron_axe", 10,
+								"minecraft:iron_shovel", 7),
 						slot("mainHandRanged", "empty", 5, "minecraft:bow", 95),
 						slot("offHand", "empty", 92, "minecraft:shield", 8)),
 				durability(10, 35, 40, 15),
@@ -242,13 +278,13 @@ public final class SiegeClusterDefaults {
 						"leggings", "minecraft:iron_leggings",
 						"boots", "minecraft:golden_boots",
 						"mainHand", "minecraft:wooden_sword"),
-				loot(0.5D, 1, 4));
+				loot(0.9D, 1, 4));
 	}
 
 	private static SiegeClusterTemplate undeadLegion() {
 		return new SiegeClusterTemplate(
 				"undead_legion", "亡灵军团", "undead", "legion", "large",
-				new CountSpec(50, 70, List.of()),
+				scaledCount(8, 20),
 				List.of(
 						species("minecraft:zombie", 55),
 						species("minecraft:skeleton", 20),
@@ -257,7 +293,7 @@ public final class SiegeClusterDefaults {
 						species("minecraft:witch", 6),
 						species("minecraft:husk", 5)),
 				stats(
-						nums("35", 20, "42", 35, "48", 30, "55", 15),
+						nums("12", 20, "15", 35, "18", 30, "20", 15),
 						speedLegion(),
 						nums("3.5", 50, "4.5", 50)),
 				slots(
@@ -277,15 +313,19 @@ public final class SiegeClusterDefaults {
 								"minecraft:iron_boots", 18,
 								"minecraft:diamond_boots", 78,
 								"minecraft:netherite_boots", 2),
-						slot("mainHand", "empty", 5,
-								"minecraft:iron_sword", 22,
-								"minecraft:diamond_sword", 70,
-								"minecraft:netherite_sword", 3),
+						slot("mainHand", "empty", 4,
+								"minecraft:diamond_sword", 36,
+								"minecraft:iron_sword", 8,
+								"minecraft:netherite_sword", 2,
+								"minecraft:diamond_pickaxe", 26,
+								"minecraft:iron_pickaxe", 7,
+								"minecraft:diamond_axe", 10,
+								"minecraft:diamond_shovel", 7),
 						slot("mainHandRanged", "minecraft:bow", 100),
 						slot("offHand", "empty", 80, "minecraft:shield", 20)),
 				durability(5, 20, 45, 30),
 				new EnchantSpec(0.28D, 0.35D, 15, 25),
-				"minecraft:iron_sword", 0.0D, 0.0D, Map.of(), loot(0.7D, 2, 8));
+				"minecraft:iron_sword", 0.0D, 0.0D, Map.of(), loot(0.1D, 2, 6));
 	}
 
 	private static SiegeClusterTemplate netherWraith() {
@@ -321,7 +361,7 @@ public final class SiegeClusterDefaults {
 	private static SiegeClusterTemplate illagerBandSmall() {
 		return new SiegeClusterTemplate(
 				"illager_band_small", "小股掠夺", "illager", "small", "medium",
-				new CountSpec(15, 20, List.of()),
+				scaledCount(4, 15),
 				List.of(
 						new SpeciesSpec("minecraft:pillager", 55, false,
 								new StatsSpec(Map.of(), Map.of(), nums("2.0", 100))),
@@ -329,7 +369,7 @@ public final class SiegeClusterDefaults {
 								new StatsSpec(Map.of(), Map.of(), nums("5.0", 100))),
 						new SpeciesSpec("minecraft:witch", 10, false,
 								new StatsSpec(Map.of(), Map.of(), nums("2.0", 100)))),
-				stats(nums("16", 35, "20", 40, "22", 25), speedSmall(), Map.of()),
+				stats(nums("6", 35, "8", 40, "9", 25), speedSmall(), Map.of()),
 				slots(
 						slot("helmet", "empty", 30,
 								"minecraft:leather_helmet", 40,
@@ -352,13 +392,13 @@ public final class SiegeClusterDefaults {
 						slot("offHand", "empty", 100)),
 				durability(25, 40, 28, 7),
 				new EnchantSpec(0.06D, 0.10D, 5, 12),
-				null, 0.0D, 0.0D, Map.of(), loot(0.2D, 1, 2));
+				null, 0.0D, 0.0D, Map.of(), loot(0.8D, 1, 2));
 	}
 
 	private static SiegeClusterTemplate illagerHost() {
 		return new SiegeClusterTemplate(
 				"illager_host", "掠夺大队", "illager", "host", "medium",
-				new CountSpec(28, 32, List.of()),
+				scaledCount(5, 16),
 				List.of(
 						new SpeciesSpec("minecraft:pillager", 40, false,
 								new StatsSpec(Map.of(), Map.of(), nums("2.0", 100))),
@@ -367,7 +407,7 @@ public final class SiegeClusterDefaults {
 						species("minecraft:evoker", 8),
 						new SpeciesSpec("minecraft:witch", 12, false,
 								new StatsSpec(Map.of(), Map.of(), nums("2.0", 100)))),
-				stats(nums("24", 30, "28", 45, "32", 25), speedHost(), Map.of()),
+				stats(nums("9", 30, "11", 45, "13", 25), speedHost(), Map.of()),
 				slots(
 						slot("helmet", "empty", 10,
 								"minecraft:chainmail_helmet", 14,
@@ -390,14 +430,14 @@ public final class SiegeClusterDefaults {
 						slot("offHand", "empty", 100)),
 				durability(10, 32, 42, 16),
 				new EnchantSpec(0.15D, 0.18D, 8, 18),
-				null, 0.0D, 0.0D, Map.of(), loot(0.5D, 1, 4));
+				null, 0.0D, 0.0D, Map.of(), loot(0.9D, 1, 4));
 	}
 
 	private static SiegeClusterTemplate illagerLegion() {
-		StatsSpec ravagerHealth = new StatsSpec(nums("100", 40, "120", 40, "140", 20), Map.of(), Map.of());
+		StatsSpec ravagerHealth = new StatsSpec(nums("25", 40, "30", 40, "35", 20), Map.of(), Map.of());
 		return new SiegeClusterTemplate(
 				"illager_legion", "灾厄军团", "illager", "legion", "large",
-				new CountSpec(50, 70, List.of()),
+				scaledCount(8, 20),
 				List.of(
 						new SpeciesSpec("minecraft:vindicator", 45, false,
 								new StatsSpec(Map.of(), Map.of(), nums("5.0", 100))),
@@ -407,7 +447,7 @@ public final class SiegeClusterDefaults {
 						new SpeciesSpec("minecraft:ravager", 5, false, ravagerHealth),
 						new SpeciesSpec("minecraft:witch", 10, false,
 								new StatsSpec(Map.of(), Map.of(), nums("2.0", 100)))),
-				stats(nums("28", 20, "36", 40, "42", 25, "48", 15), speedLegion(), Map.of()),
+				stats(nums("11", 20, "14", 40, "17", 25, "20", 15), speedLegion(), Map.of()),
 				slots(
 						slot("helmet", "empty", 0,
 								"minecraft:iron_helmet", 25,
@@ -433,7 +473,7 @@ public final class SiegeClusterDefaults {
 						slot("offHand", "empty", 100)),
 				durability(5, 20, 45, 30),
 				new EnchantSpec(0.28D, 0.35D, 15, 25),
-				null, 0.08D, 0.0D, Map.of(), loot(0.7D, 2, 8));
+				null, 0.08D, 0.0D, Map.of(), loot(0.1D, 2, 6));
 	}
 
 	private static SiegeClusterTemplate illagerWraith() {
@@ -494,28 +534,28 @@ public final class SiegeClusterDefaults {
 								"minecraft:golden_boots", 13,
 								"minecraft:leather_boots", 4,
 								"minecraft:chainmail_boots", 1),
-						slot("mainHand", "empty", 55,
-								"minecraft:golden_shovel", 15,
-								"minecraft:golden_axe", 12,
-								"minecraft:golden_pickaxe", 12,
-								"minecraft:stone_shovel", 4,
-								"minecraft:stone_pickaxe", 2),
+						slot("mainHand", "empty", 20,
+								"minecraft:golden_shovel", 27,
+								"minecraft:golden_axe", 21,
+								"minecraft:golden_pickaxe", 21,
+								"minecraft:stone_shovel", 7,
+								"minecraft:stone_pickaxe", 4),
 						slot("offHand", "empty", 100)),
 				durability(50, 35, 12, 3),
 				new EnchantSpec(0.0D, 0.0D, 0, 0),
-				null, 0.0D, 0.0D, Map.of(), loot(0.1D, 1, 1));
+				null, 0.0D, 0.0D, Map.of(), loot(0.5D, 1, 1));
 	}
 
 	private static SiegeClusterTemplate netherWarbandSmall() {
 		return new SiegeClusterTemplate(
 				"nether_warband_small", "小股烬军", "nether", "small", "medium", "nether",
-				new CountSpec(15, 20, List.of()),
+				new CountSpec(4, 15, List.of()),
 				List.of(
 						species("minecraft:zombified_piglin", 72),
 						species("minecraft:skeleton", 18),
 						species("minecraft:wither_skeleton", 10)),
 				stats(
-						nums("12", 35, "14", 40, "16", 25),
+						nums("6", 35, "7", 40, "8", 25),
 						speedSmall(),
 						nums("2.0", 60, "3.0", 40)),
 				slots(
@@ -539,30 +579,33 @@ public final class SiegeClusterDefaults {
 								"minecraft:chainmail_boots", 6,
 								"minecraft:leather_boots", 5,
 								"minecraft:iron_boots", 4),
-						slot("mainHand", "empty", 15,
-								"minecraft:golden_sword", 40,
-								"minecraft:stone_sword", 25,
-								"minecraft:iron_sword", 18,
-								"minecraft:wooden_sword", 2),
+						slot("mainHand", "empty", 10,
+								"minecraft:golden_sword", 18,
+								"minecraft:stone_sword", 12,
+								"minecraft:iron_sword", 8,
+								"minecraft:wooden_sword", 2,
+								"minecraft:golden_pickaxe", 17,
+								"minecraft:golden_axe", 17,
+								"minecraft:golden_shovel", 16),
 						slot("mainHandRanged", "empty", 15, "minecraft:bow", 85),
 						slot("offHand", "empty", 100)),
 				durability(30, 40, 25, 5),
 				new EnchantSpec(0.05D, 0.08D, 5, 12),
-				null, 0.0D, 0.0D, Map.of(), loot(0.2D, 1, 2));
+				null, 0.0D, 0.0D, Map.of(), loot(0.8D, 1, 2));
 	}
 
 	private static SiegeClusterTemplate netherHost() {
-		StatsSpec ghastHealth = new StatsSpec(nums("10", 40, "14", 45, "16", 15), Map.of(), Map.of());
+		StatsSpec ghastHealth = new StatsSpec(nums("5", 40, "7", 45, "8", 15), Map.of(), Map.of());
 		return new SiegeClusterTemplate(
 				"nether_host", "一群烬军", "nether", "host", "medium", "nether",
-				new CountSpec(28, 32, List.of()),
+				new CountSpec(5, 16, List.of()),
 				List.of(
 						species("minecraft:zombified_piglin", 55),
 						species("minecraft:skeleton", 22),
 						species("minecraft:wither_skeleton", 21),
 						new SpeciesSpec("minecraft:ghast", 2, false, ghastHealth)),
 				stats(
-						nums("20", 25, "24", 35, "28", 25, "32", 15),
+						nums("10", 25, "12", 35, "14", 25, "16", 15),
 						speedHost(),
 						nums("3.0", 100)),
 				slots(
@@ -587,29 +630,32 @@ public final class SiegeClusterDefaults {
 								"minecraft:chainmail_boots", 6,
 								"minecraft:diamond_boots", 2),
 						slot("mainHand", "empty", 5,
-								"minecraft:golden_sword", 8,
-								"minecraft:stone_sword", 12,
-								"minecraft:iron_sword", 72,
-								"minecraft:diamond_sword", 3),
+								"minecraft:iron_sword", 32,
+								"minecraft:stone_sword", 7,
+								"minecraft:golden_sword", 4,
+								"minecraft:diamond_sword", 2,
+								"minecraft:iron_pickaxe", 17,
+								"minecraft:iron_axe", 17,
+								"minecraft:iron_shovel", 16),
 						slot("mainHandRanged", "empty", 5, "minecraft:bow", 95),
 						slot("offHand", "empty", 92, "minecraft:shield", 8)),
 				durability(10, 35, 40, 15),
 				new EnchantSpec(0.12D, 0.18D, 8, 18),
-				null, 0.0D, 0.0D, Map.of(), loot(0.5D, 1, 4));
+				null, 0.0D, 0.0D, Map.of(), loot(0.9D, 1, 4));
 	}
 
 	private static SiegeClusterTemplate netherLegion() {
-		StatsSpec ghastHealth = new StatsSpec(nums("14", 40, "16", 45, "20", 15), Map.of(), Map.of());
+		StatsSpec ghastHealth = new StatsSpec(nums("7", 40, "8", 45, "10", 15), Map.of(), Map.of());
 		return new SiegeClusterTemplate(
 				"nether_legion", "烬炎军团", "nether", "legion", "large", "nether",
-				new CountSpec(50, 70, List.of()),
+				new CountSpec(8, 20, List.of()),
 				List.of(
 						species("minecraft:zombified_piglin", 50),
 						species("minecraft:wither_skeleton", 24),
 						species("minecraft:skeleton", 20),
 						new SpeciesSpec("minecraft:ghast", 6, false, ghastHealth)),
 				stats(
-						nums("35", 20, "42", 35, "48", 30, "55", 15),
+						nums("18", 20, "21", 35, "24", 30, "28", 15),
 						speedLegion(),
 						nums("3.5", 50, "4.5", 50)),
 				slots(
@@ -629,15 +675,18 @@ public final class SiegeClusterDefaults {
 								"minecraft:iron_boots", 18,
 								"minecraft:diamond_boots", 78,
 								"minecraft:netherite_boots", 2),
-						slot("mainHand", "empty", 5,
-								"minecraft:iron_sword", 22,
-								"minecraft:diamond_sword", 70,
-								"minecraft:netherite_sword", 3),
+						slot("mainHand", "empty", 4,
+								"minecraft:diamond_sword", 36,
+								"minecraft:iron_sword", 8,
+								"minecraft:netherite_sword", 2,
+								"minecraft:diamond_pickaxe", 17,
+								"minecraft:diamond_axe", 17,
+								"minecraft:diamond_shovel", 16),
 						slot("mainHandRanged", "minecraft:bow", 100),
 						slot("offHand", "empty", 80, "minecraft:shield", 20)),
 				durability(5, 20, 45, 30),
 				new EnchantSpec(0.28D, 0.35D, 15, 25),
-				"minecraft:iron_sword", 0.0D, 0.0D, Map.of(), loot(0.7D, 2, 8));
+				"minecraft:iron_sword", 0.0D, 0.0D, Map.of(), loot(0.1D, 2, 6));
 	}
 
 	private static SiegeClusterTemplate netherAshWraith() {

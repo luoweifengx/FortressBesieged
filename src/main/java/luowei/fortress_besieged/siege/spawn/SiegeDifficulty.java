@@ -5,8 +5,9 @@ import net.minecraft.world.Difficulty;
 
 /**
  * Vanilla world difficulty as the global siege/wilderness dial.
- * Peaceful: no natural rolls. Easy/Normal share delayed unlocks; Hard keeps
- * current unlocks except host (一群) which needs iron armor.
+ * Peaceful: no natural rolls. Siege cadence and wilderness away-timer
+ * are unscaled. Pack counts use template {@code countByDifficulty}.
+ * Stage / tier unlocks use the Normal rules on every non-peaceful difficulty.
  */
 public final class SiegeDifficulty {
 	private SiegeDifficulty() {
@@ -24,11 +25,12 @@ public final class SiegeDifficulty {
 		return difficulty == Difficulty.HARD;
 	}
 
-	/** Easy and Normal: small at iron, host at diamond, legion at 终末. */
+	/** All non-peaceful: small at iron, host at diamond, legion at diamond or demon. */
 	public static boolean usesRelaxedUnlocks(Difficulty difficulty) {
-		return difficulty == Difficulty.EASY || difficulty == Difficulty.NORMAL;
+		return difficulty != Difficulty.PEACEFUL;
 	}
 
+	/** Legacy interval scale; siege and wilderness cadences are unscaled. */
 	public static int intervalMultiplier(Difficulty difficulty) {
 		return switch (difficulty == null ? Difficulty.HARD : difficulty) {
 			case PEACEFUL -> 0;
@@ -49,9 +51,9 @@ public final class SiegeDifficulty {
 	public static float equipmentDropMultiplier(Difficulty difficulty) {
 		return switch (difficulty == null ? Difficulty.HARD : difficulty) {
 			case PEACEFUL -> 0.0F;
-			case EASY -> 0.3F;
-			case NORMAL -> 0.4F;
-			case HARD -> 0.8F;
+			case EASY -> 0.6F;
+			case NORMAL -> 0.7F;
+			case HARD -> 0.9F;
 		};
 	}
 }

@@ -16,8 +16,9 @@ import luowei.fortress_besieged.siege.pbs.PbsTerritoryAdapter;
  *   <li>Territory chunk center from PBS {@code queryTerritoryCentroid}</li>
  *   <li>Sample up to {@link SiegeSpawnConfig#BORDER_SAMPLE_COUNT} BORDER chunks
  *       from {@code queryOrgTerritory(...).border()}</li>
- *   <li>Around each sample, collect {@code HOSTILE_BORDER} within Chebyshev
- *       ≤ {@link SiegeSpawnConfig#HOSTILE_EXPAND_CHEBYSHEV}; keep nearest
+ *   <li>Around each sample, collect {@code HOSTILE_BORDER} and {@code HOSTILE}
+ *       at Chebyshev {@link SiegeSpawnConfig#HOSTILE_EXPAND_MIN_CHEBYSHEV}–
+ *       {@link SiegeSpawnConfig#HOSTILE_EXPAND_CHEBYSHEV}; keep nearest
  *       ≤ {@link SiegeSpawnConfig#NEAREST_CANDIDATE_LIMIT} by distance to center</li>
  *   <li>Each candidate accepted independently with
  *       {@code p = SITE_ACCEPT_PROBABILITY} (Bernoulli); count may be 0</li>
@@ -57,7 +58,7 @@ public final class SiegeSpawnSiteSelector {
 	}
 
 	/**
-	 * @return selection; {@code chosenSites} empty if no territory / no HOSTILE_BORDER / all Bernoulli rejects
+	 * @return selection; {@code chosenSites} empty if no territory / no spawn site / all Bernoulli rejects
 	 */
 	public static SiteSelection select(ServerLevel level, UUID targetId, Random random) {
 		return selectHostileBorder(level, targetId, random);
@@ -78,6 +79,7 @@ public final class SiegeSpawnSiteSelector {
 				targetId,
 				random,
 				SiegeSpawnConfig.BORDER_SAMPLE_COUNT,
+				SiegeSpawnConfig.HOSTILE_EXPAND_MIN_CHEBYSHEV,
 				SiegeSpawnConfig.HOSTILE_EXPAND_CHEBYSHEV);
 		List<ChunkPos> chosen = pickSites(nearest, random);
 		if (SiegeSpawnMonitor.isDebug()) {
@@ -95,8 +97,8 @@ public final class SiegeSpawnSiteSelector {
 	}
 
 	/**
-	 * Hell-tier sites: sample demon chunks as anchors (optionally snap to nearby HOSTILE_BORDER).
-	 * Does not run the ordinary HOSTILE_BORDER Bernoulli pipeline.
+	 * Hell-tier sites: sample demon chunks as anchors (optionally snap to nearby
+	 * HOSTILE_BORDER / HOSTILE). Does not run the ordinary Bernoulli pipeline.
 	 */
 	public static SiteSelection selectDemon(ServerLevel level, UUID targetId, Random random) {
 		ChunkPos center = PbsTerritoryAdapter.getTerritoryCenter(level, targetId).orElse(null);

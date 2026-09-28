@@ -23,7 +23,7 @@ import luowei.fortress_besieged.siege.spawn.SiegeProgression.WorldSnapshot;
 
 /**
  * Natural siege: each online player in this dimension is one roll slot on a
- * difficulty-scaled cadence (same stage {@code chance} as before). A hit looks
+ * fixed {@link SiegeSpawnConfig#NATURAL_PLAN_INTERVAL_TICKS} cadence. A hit looks
  * up the player's org (or the player if solo) and runs the full spawn pipeline.
  * Several members of one org can hit in the same cycle and each run is separate.
  * Command waves ({@code /siege spawn}) still sample the PBS poll.
@@ -79,9 +79,10 @@ public final class SiegeSpawnScheduler {
 	}
 
 	private static int interval(ServerLevel level) {
-		return SiegeDifficulty.scaledInterval(
-				SiegeSpawnConfig.NATURAL_PLAN_INTERVAL_TICKS,
-				SiegeDifficulty.of(level));
+		if (SiegeDifficulty.isPeaceful(level)) {
+			return Integer.MAX_VALUE;
+		}
+		return SiegeSpawnConfig.NATURAL_PLAN_INTERVAL_TICKS;
 	}
 
 	/**
@@ -187,12 +188,12 @@ public final class SiegeSpawnScheduler {
 		}
 
 		slot.nextAttemptAt = gameTime + interval;
-		SiegeSpawnMonitor.debug(
-				"picked player={} org={} stage={} timeOfDay={} gameTime={} dim={} source=natural",
-				name, org, current.id(), timeOfDay, gameTime, SiegeSpawnMonitor.dim(level));
-
 		Random random = new Random(level.random.nextLong());
-		if (!(random.nextFloat() < window.chance())) {
+		boolean bloodMoon = BloodMoon.isActive(level);
+		SiegeSpawnMonitor.debug(
+				"picked player={} org={} stage={} timeOfDay={} gameTime={} dim={} source=natural bloodMoon={}",
+				name, org, current.id(), timeOfDay, gameTime, SiegeSpawnMonitor.dim(level), bloodMoon);
+		if (!bloodMoon && !(random.nextFloat() < window.chance())) {
 			SiegeSpawnMonitor.debug(
 					"chance miss player={} org={} stage={} chance={} timeOfDay={} dim={}",
 					name, org, current.id(), window.chance(), timeOfDay, SiegeSpawnMonitor.dim(level));

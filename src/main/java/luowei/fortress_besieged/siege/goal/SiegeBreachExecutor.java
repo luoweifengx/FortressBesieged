@@ -148,6 +148,8 @@ public final class SiegeBreachExecutor {
 		mob.getMoveControl().setWantedPosition(pos.getX() + 0.5D, pos.getY(), pos.getZ() + 0.5D, WALK_SPEED);
 		if (mob.onGround() && pos.getY() == feet.getY() + 1) {
 			mob.getJumpControl().jump();
+		} else {
+			SiegeAiHelper.tickWaterFloat(mob);
 		}
 		return Status.RUNNING;
 	}
@@ -171,6 +173,7 @@ public final class SiegeBreachExecutor {
 		if (!level.setBlock(pos, Blocks.COBBLESTONE.defaultBlockState(), 3)) {
 			return Status.FAILED;
 		}
+		PbsTerritoryAdapter.notifyErosionBlockPlaced(level, pos);
 		advance();
 		return index >= actions.size() ? Status.FINISHED : Status.RUNNING;
 	}

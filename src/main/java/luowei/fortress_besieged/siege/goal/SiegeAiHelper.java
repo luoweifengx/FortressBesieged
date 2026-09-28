@@ -10,10 +10,12 @@ import java.util.function.Predicate;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.tags.FluidTags;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.PathfinderMob;
+import net.minecraft.world.entity.ai.goal.FloatGoal;
 import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.entity.ai.goal.GoalSelector;
 import net.minecraft.world.entity.ai.goal.MeleeAttackGoal;
@@ -61,7 +63,11 @@ public final class SiegeAiHelper {
 	}
 
 	public static void install(Mob mob, SiegeCluster cluster) {
+		ensureWaterFloat(mob);
 		if (hasSiegeGoals(mob)) {
+			if (mob instanceof Ghast ghast && !hasGhastBombard(mob)) {
+				goals(mob).addGoal(1, new SiegeGhastBombardGoal(ghast, cluster));
+			}
 			applyGlowing(mob);
 			SiegeClusterManager.bindMob(mob, cluster);
 			angerZombifiedPiglin(mob);
@@ -73,7 +79,9 @@ public final class SiegeAiHelper {
 		// 卸掉原有游荡后按固定优先级加回，避免与围城 Goal 抢优先级
 		removeWanderGoals(goals);
 		boolean ghast = isGhast(mob);
-		if (!ghast) {
+		if (ghast) {
+			goals.addGoal(1, new SiegeGhastBombardGoal((Ghast) mob, cluster));
+		} else {
 			goals.addGoal(1, new SiegeDestroyBlockGoal(mob, cluster));
 		}
 		goals.addGoal(2, new SiegeAttackGoal(mob, cluster));
@@ -100,7 +108,11 @@ public final class SiegeAiHelper {
 	 * idle-dice-to-mine, no glowing, no cluster bind.
 	 */
 	public static void installWilderness(Mob mob) {
-		if (mob == null || hasWildernessGoals(mob) || hasSiegeGoals(mob)) {
+		if (mob == null) {
+			return;
+		}
+		ensureWaterFloat(mob);
+		if (hasWildernessGoals(mob) || hasSiegeGoals(mob)) {
 			return;
 		}
 		GoalSelector goals = goals(mob);
@@ -113,6 +125,15 @@ public final class SiegeAiHelper {
 		}
 		mob.setTarget(null);
 		angerZombifiedPiglin(mob);
+	}
+
+	private static boolean hasGhastBombard(Mob mob) {
+		for (WrappedGoal wrapped : goals(mob).getAvailableGoals()) {
+			if (wrapped.getGoal() instanceof SiegeGhastBombardGoal) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	public static boolean hasWildernessGoals(Mob mob) {
@@ -135,11 +156,6 @@ public final class SiegeAiHelper {
 		restoreVanillaCombat(mob);
 		clearGlowing(mob);
 		SiegeClusterManager.unbindMob(mob);
-	}
-
-	/** 解散后保留攻击倾向：清掉集群 Goal，并恢复原版近战/索敌。 */
-	public static void switchToVanillaAttack(Mob mob) {
-		uninstall(mob);
 	}
 
 	/** 单位已死、无需恢复 Goal 时丢掉备份。 */
@@ -212,6 +228,35 @@ public final class SiegeAiHelper {
 	}
 
 	/**
+	 * 水里上浮：保留/补上原版 {@link FloatGoal}，并打开导航 {@code canFloat}。
+	 * 恶魂走飞行，不加。
+	 */
+	static void ensureWaterFloat(Mob mob) {
+		if (mob == null || isGhast(mob)) {
+			return;
+		}
+		mob.getNavigation().setCanFloat(true);
+		GoalSelector goals = goals(mob);
+		for (WrappedGoal wrapped : goals.getAvailableGoals()) {
+			if (wrapped.getGoal() instanceof FloatGoal) {
+				return;
+			}
+		}
+		goals.addGoal(0, new FloatGoal(mob));
+	}
+
+	/** DESTROY 跟格时 MoveControl 会把怪往水底拽，需主动跳以浮到水面。 */
+	static void tickWaterFloat(Mob mob) {
+		if (mob == null || isGhast(mob) || !mob.isInWater()) {
+			return;
+		}
+		if (mob.getFluidHeight(FluidTags.WATER) <= mob.getFluidJumpThreshold()) {
+			return;
+		}
+		mob.getJumpControl().jump();
+	}
+
+	/**
 	 * 持弓骷髅（含流浪者/沼骸，不含凋灵骷髅）：不抢 MOVE/LOOK，保留原版 {@code RangedBowAttackGoal}。
 	 */
 	static boolean isBowSkeleton(Mob mob) {
@@ -220,7 +265,10 @@ public final class SiegeAiHelper {
 				&& mob.isHolding(Items.BOW);
 	}
 
-	/** 恶魂火球 / 持弓骷髅射箭：本模组 Goal 只负责 {@code setTarget}。 */
+	/**
+	 * 打人时不抢 MOVE/LOOK：恶魂对人仍走原版火球 Goal，持弓骷髅走原版射箭。
+	 * 恶魂打方块由 {@link SiegeGhastBombardGoal} 自己飞过去开火。
+	 */
 	static boolean leaveVanillaRanged(Mob mob) {
 		return isGhast(mob) || isBowSkeleton(mob);
 	}
@@ -243,6 +291,7 @@ public final class SiegeAiHelper {
 
 	private static boolean isSiegeGoalInstance(Goal goal) {
 		return goal instanceof SiegeDestroyBlockGoal
+				|| goal instanceof SiegeGhastBombardGoal
 				|| goal instanceof SiegeAttackGoal
 				|| goal instanceof SiegeIdleReturnGoal
 				|| goal instanceof SiegeIdleDecideGoal;

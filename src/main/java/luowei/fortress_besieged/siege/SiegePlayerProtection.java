@@ -61,4 +61,20 @@ public final class SiegePlayerProtection {
 		PlayerRecord record = SiegePlayerProtectionSavedData.get(server).get(playerId);
 		return record == null ? 0 : record.daysInGame();
 	}
+
+	/**
+	 * Lift new-player protection for this poll target (solo player, or org → owner).
+	 * @return the player UUID that was written, or {@code null} if nothing to write
+	 */
+	public static UUID liftProtection(MinecraftServer server, UUID pollTargetId) {
+		UUID playerId = PbsTerritoryAdapter.resolveProtectionPlayerId(server, pollTargetId);
+		if (server == null || playerId == null) {
+			return null;
+		}
+		SiegePlayerProtectionSavedData data = SiegePlayerProtectionSavedData.get(server);
+		PlayerRecord prev = data.ensure(playerId);
+		int days = Math.max(prev.daysInGame(), SiegeSpawnConfig.NEW_PLAYER_PROTECTION_DAYS);
+		data.put(playerId, new PlayerRecord(days, true));
+		return playerId;
+	}
 }

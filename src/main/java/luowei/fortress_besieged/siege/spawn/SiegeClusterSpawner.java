@@ -147,9 +147,11 @@ public final class SiegeClusterSpawner {
 		} else {
 			if (sites.nearestHostileBorders().isEmpty()) {
 				SpawnResult result = new SpawnResult(sites, List.of(),
-						"No HOSTILE_BORDER near sampled BORDER (sample="
+						"No HOSTILE_BORDER/HOSTILE near sampled BORDER (sample="
 								+ SiegeSpawnConfig.BORDER_SAMPLE_COUNT
-								+ ", expandChebyshev≤"
+								+ ", expandChebyshev "
+								+ SiegeSpawnConfig.HOSTILE_EXPAND_MIN_CHEBYSHEV
+								+ "-"
 								+ SiegeSpawnConfig.HOSTILE_EXPAND_CHEBYSHEV
 								+ ")",
 						selection);
@@ -280,9 +282,11 @@ public final class SiegeClusterSpawner {
 		}
 		if (sites.nearestHostileBorders().isEmpty()) {
 			SpawnResult result = new SpawnResult(sites, List.of(),
-					"No HOSTILE_BORDER near sampled BORDER (sample="
+						"No HOSTILE_BORDER/HOSTILE near sampled BORDER (sample="
 							+ SiegeSpawnConfig.BORDER_SAMPLE_COUNT
-							+ ", expandChebyshev≤"
+							+ ", expandChebyshev "
+							+ SiegeSpawnConfig.HOSTILE_EXPAND_MIN_CHEBYSHEV
+							+ "-"
 							+ SiegeSpawnConfig.HOSTILE_EXPAND_CHEBYSHEV
 							+ ")");
 			logSpawnFail(level, player, result.message(), t0);
@@ -346,13 +350,13 @@ public final class SiegeClusterSpawner {
 			SiegeClusterTemplate template,
 			Random random
 	) {
-		int count = template.rollCount(random);
+		int count = template.rollCount(random, level.getDifficulty());
 		List<Mob> spawned = new ArrayList<>(count);
 		int baseX = chunk.getMinBlockX() + 8;
 		int baseZ = chunk.getMinBlockZ() + 8;
 
 		for (int i = 0; i < count; i++) {
-			SpeciesSpec species = template.rollSpecies(random);
+			SpeciesSpec species = template.rollSpecies(random, SiegeDayClock.dayIndex(level));
 			if (species == null) {
 				continue;
 			}

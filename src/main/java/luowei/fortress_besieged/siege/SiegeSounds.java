@@ -27,8 +27,7 @@ import luowei.fortress_besieged.siege.spawn.SiegeSpawnMonitor;
 public final class SiegeSounds {
 	/** Vanilla goat horn is volume 16 (~256 blocks); farther so a large territory still hears it. */
 	private static final float HORN_VOLUME = 32.0F;
-	private static final float BELL_WORLD_VOLUME = 2.0F;
-	private static final float BELL_PITCH = 1.15F;
+	private static final float LEVELUP_WORLD_VOLUME = 1.0F;
 
 	private SiegeSounds() {
 	}
@@ -115,10 +114,9 @@ public final class SiegeSounds {
 		}
 		ServerLevel level = cluster.getLevel();
 		ChunkPos at = cluster.getTargetChunk() != null ? cluster.getTargetChunk() : cluster.getAnchorChunk();
-		playWorld(level, at, SoundEvents.BELL_RESONATE, SoundSource.NEUTRAL, BELL_WORLD_VOLUME, BELL_PITCH);
+		playWorld(level, at, SoundEvents.PLAYER_LEVELUP, SoundSource.PLAYERS, LEVELUP_WORLD_VOLUME, 1.0F);
 		Set<UUID> defenders = resolveDefenderIds(level, cluster.getSiegeTargetId(), cluster);
-		notifyDefenders(level, defenders, SoundEvents.BELL_RESONATE, SoundSource.NEUTRAL, 1.0F, BELL_PITCH);
-		notifyDefenders(level, defenders, SoundEvents.UI_TOAST_CHALLENGE_COMPLETE, SoundSource.PLAYERS, 1.0F, 1.0F);
+		notifyDefenders(level, defenders, SoundEvents.PLAYER_LEVELUP, SoundSource.PLAYERS, 1.0F, 1.0F);
 	}
 
 	private static void playHornAt(

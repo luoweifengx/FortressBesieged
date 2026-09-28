@@ -7,6 +7,7 @@ import net.fabricmc.fabric.api.event.lifecycle.v1.ServerEntityEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerWorldEvents;
+import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 
 import net.minecraft.resources.ResourceLocation;
@@ -16,6 +17,7 @@ import net.minecraft.world.entity.Mob;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import luowei.fortress_besieged.net.BloodMoonS2CPayload;
 import luowei.fortress_besieged.siege.SiegeChunkTickets;
 import luowei.fortress_besieged.siege.SiegeClusterBehaviorConfig;
 import luowei.fortress_besieged.siege.SiegeClusterManager;
@@ -23,9 +25,11 @@ import luowei.fortress_besieged.siege.SiegeCommands;
 import luowei.fortress_besieged.siege.SiegePlayerProtection;
 import luowei.fortress_besieged.siege.SiegeProgressionFlags;
 import luowei.fortress_besieged.siege.path.SiegePathCostConfig;
+import luowei.fortress_besieged.siege.spawn.BloodMoon;
 import luowei.fortress_besieged.siege.spawn.HellSpawnScheduler;
 import luowei.fortress_besieged.siege.spawn.SiegeClusterConfig;
 import luowei.fortress_besieged.siege.spawn.SiegeSpawnScheduler;
+import luowei.fortress_besieged.siege.spawn.UndeadInvasion;
 import luowei.fortress_besieged.siege.spawn.WildernessPackTracker;
 import luowei.fortress_besieged.siege.spawn.WildernessSpawnScheduler;
 
@@ -39,6 +43,7 @@ public class FortressBesieged implements ModInitializer {
 		SiegeClusterBehaviorConfig.load();
 		SiegeClusterConfig.load();
 		SiegeChunkTickets.bootstrap();
+		PayloadTypeRegistry.playS2C().register(BloodMoonS2CPayload.TYPE, BloodMoonS2CPayload.STREAM_CODEC);
 
 		CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) ->
 				SiegeCommands.register(dispatcher));
@@ -47,11 +52,15 @@ public class FortressBesieged implements ModInitializer {
 			var player = handler.getPlayer();
 			SiegePlayerProtection.ensurePlayer(server, player.getUUID());
 			SiegeProgressionFlags.onPlayerJoin(server, player);
+			BloodMoon.syncTo(player);
+			UndeadInvasion.syncTo(player);
 		});
 
 		ServerTickEvents.END_WORLD_TICK.register(world -> {
 			if (world instanceof ServerLevel serverLevel) {
 				SiegeClusterManager.tickLevel(serverLevel);
+				BloodMoon.onWorldTick(serverLevel);
+				UndeadInvasion.onWorldTick(serverLevel);
 				SiegeSpawnScheduler.onWorldTick(serverLevel);
 				HellSpawnScheduler.onWorldTick(serverLevel);
 				WildernessSpawnScheduler.onWorldTick(serverLevel);

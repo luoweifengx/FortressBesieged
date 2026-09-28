@@ -86,7 +86,7 @@ public final class SiegeUnitDefinition {
 		return offHand;
 	}
 
-	/** Apply configured gear; drop chance is vanilla default × difficulty (hard 0.8 / normal 0.4 / easy 0.3). */
+	/** Apply configured gear; drop chance is vanilla default × difficulty (hard 0.9 / normal 0.7 / easy 0.6). */
 	public void equip(Mob mob) {
 		if (mob == null) {
 			return;

@@ -77,12 +77,6 @@ public final class SiegeTargetDecision {
 			}
 		}
 
-		if (SiegeAiHelper.isGhast(mob)) {
-			mob.setTarget(null);
-			logIdleDecision(mob, firstRoll, denom, roll, "IDLE", null);
-			return false;
-		}
-
 		BlockPos block = findNearestBreakableNear(serverLevel, cluster, mob);
 		if (block != null) {
 			record.assignDestroy(block);

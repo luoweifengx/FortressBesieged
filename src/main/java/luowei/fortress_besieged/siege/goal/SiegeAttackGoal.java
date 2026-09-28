@@ -11,7 +11,8 @@ import luowei.fortress_besieged.siege.SiegeUnitRecord;
 import luowei.fortress_besieged.siege.targeting.SiegeTargeting;
 
 /**
- * ATTACK：近战用原版 navigation {@code moveTo} 追打；持弓骷髅 / 恶魂只 {@code setTarget}，射击走原版 Goal。
+ * ATTACK：近战用原版 navigation {@code moveTo} 追打；持弓骷髅 / 恶魂只 {@code setTarget}，对人射击走原版 Goal。
+ * 恶魂打方块不走这里，由 {@link SiegeGhastBombardGoal} 发射火焰弹。
  * 锁定仇恨（受击打断 / 地狱预警）不受 7×7 限制，直到绳长丢失后再接回原工作。
  */
 public class SiegeAttackGoal extends Goal {

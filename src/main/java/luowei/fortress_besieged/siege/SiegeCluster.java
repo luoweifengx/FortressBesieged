@@ -38,6 +38,8 @@ import luowei.player_block_status.lib.chunk.ChunkState;
 public final class SiegeCluster {
 	public static final int FREE_CHASE_RADIUS = 3; // 7×7 Chebyshev
 	public static final int FREE_SCAN_RADIUS = 1;  // 3×3 Chebyshev
+	/** FREE→ASSEMBLE：锚点周围切比雪夫搜索最近 OCCUPIED/BORDER 的半径。 */
+	public static final int ASSEMBLE_SEARCH_RADIUS = 10;
 	/** 读档后：未进世界的单位 UUID 不按死亡 prune；超时仍未出现则视为离线期间已死。 */
 	private static final int LOAD_GRACE_TICKS = 400;
 
@@ -315,11 +317,11 @@ public final class SiegeCluster {
 		pruneDeadUnits();
 		int living = countLiving();
 		if (living == 0) {
-			disband(false);
+			disband("no_living");
 			return;
 		}
 		if (!isHell() && state != SiegeClusterState.ASSEMBLE && living <= 2) {
-			disband(true);
+			disband("living_le_2");
 			return;
 		}
 
@@ -334,18 +336,19 @@ public final class SiegeCluster {
 		if (isHell()) {
 			return;
 		}
-		List<ChunkPos> candidates = PbsTerritoryAdapter.findAdjacentAssaultChunks(level, anchorChunk);
+		List<ChunkPos> candidates = PbsTerritoryAdapter.findNearestAssaultChunks(
+				level, anchorChunk, ASSEMBLE_SEARCH_RADIUS);
 		if (candidates.isEmpty()) {
 			return;
 		}
 		targetChunk = candidates.get(random.nextInt(candidates.size()));
 		updateTickets();
-		enterAssault("assemble_adjacent");
+		enterAssault("assemble_nearest");
 	}
 
 	/**
 	 * Spawn-time entry: set assault target to the nearest OCCUPIED/BORDER chunk
-	 * and enter ASSAULT immediately (skips the ASSEMBLE adjacency roll).
+	 * and enter ASSAULT immediately (skips the ASSEMBLE nearest-chunk search).
 	 */
 	public void startAssaultOn(ChunkPos assaultTarget) {
 		if (disbanded || assaultTarget == null) {
@@ -362,7 +365,7 @@ public final class SiegeCluster {
 		logState(from, "ASSAULT", reason);
 		int living = countLiving();
 		if (!isHell() && living <= 2) {
-			disband(true);
+			disband("living_le_2");
 			return;
 		}
 		clearAttackContainers();
@@ -377,7 +380,7 @@ public final class SiegeCluster {
 			return;
 		}
 		if (living <= 2) {
-			disband(true);
+			disband("living_le_2");
 			return;
 		}
 
@@ -508,7 +511,7 @@ public final class SiegeCluster {
 			if (isHell()) {
 				return;
 			}
-			disband(true);
+			disband("living_le_2");
 			return;
 		}
 
@@ -735,7 +738,7 @@ public final class SiegeCluster {
 			if (isHell()) {
 				return;
 			}
-			disband(true);
+			disband("living_le_2");
 			return;
 		}
 		int x = floorLog2(m);
@@ -784,15 +787,11 @@ public final class SiegeCluster {
 
 	public void forceDisband() {
 		if (!disbanded) {
-			disband(true, "force");
+			disband("force");
 		}
 	}
 
-	private void disband(boolean switchToAttack) {
-		disband(switchToAttack, switchToAttack ? "living_le_2" : "no_living");
-	}
-
-	private void disband(boolean switchToAttack, String reason) {
+	private void disband(String reason) {
 		SiegeClusterState from = state;
 		SiegeSpawnMonitor.disbanded(this, from, reason, tickCounter, countLiving());
 		disbanded = true;
@@ -800,19 +799,15 @@ public final class SiegeCluster {
 			SiegeSounds.playVictory(this);
 		}
 		dropTickets();
-		for (UUID mobId : new ArrayList<>(units.keySet())) {
+		List<UUID> leftover = new ArrayList<>(units.keySet());
+		for (UUID mobId : leftover) {
 			Mob mob = resolveMob(mobId);
+			forgetUnit(mobId);
 			if (mob != null) {
 				SiegeAiHelper.clearGlowing(mob);
-				if (switchToAttack) {
-					SiegeAiHelper.switchToVanillaAttack(mob);
-					List<LivingEntity> near = findFriendlyInChunkRadius(mob.chunkPosition(), 1);
-					if (!near.isEmpty()) {
-						mob.setTarget(near.get(random.nextInt(near.size())));
-					}
-				} else {
-					SiegeAiHelper.uninstall(mob);
-				}
+				mob.discard();
+			} else {
+				SiegeClusterManager.markPendingDiscard(level, mobId);
 			}
 		}
 		units.clear();

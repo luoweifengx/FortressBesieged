@@ -27,13 +27,9 @@ import luowei.player_block_status.lib.chunk.ChunkTerritoryData;
 import luowei.player_block_status.lib.org.EntityPollList;
 
 /**
- * PBS 领土适配：查询区块状态 / 玩家放置方块，并在非玩家破坏时同步移除记录。
+ * PBS 领土适配：查询区块状态 / 玩家放置方块，怪物放块记侵蚀，破块时同步移除记录。
  */
 public final class PbsTerritoryAdapter {
-	private static final int[][] CARDINAL = {
-			{1, 0}, {-1, 0}, {0, 1}, {0, -1}
-	};
-
 	private PbsTerritoryAdapter() {
 	}
 
@@ -226,13 +222,14 @@ public final class PbsTerritoryAdapter {
 	}
 
 	/**
-	 * 从目标 BORDER 抽样 → 切比雪夫外扩搜集 HOSTILE_BORDER → 按距领土中心排序截断。
+	 * 从目标 BORDER 抽样 → 切比雪夫环搜集围城落点 → 按距领土中心排序截断。
+	 * 落点为 {@code HOSTILE_BORDER} 与 {@code HOSTILE}（同等出兵）。不含 {@code DEMON}。
 	 * <p>
 	 * 流程：
 	 * <ol>
 	 *   <li>{@link #sampleBorderChunks} 随机取最多 {@code borderSampleCount} 个 BORDER</li>
-	 *   <li>对每个采样边界，在切比雪夫距离 ≤ {@code expandChebyshev}
-	 *       内查找 {@code HOSTILE_BORDER}（O(采样数 × (2r+1)²)，避免大半径扫描）</li>
+	 *   <li>对每个采样边界，在切比雪夫距离 {@code expandMinChebyshev}～{@code expandMaxChebyshev}
+	 *       内查找落点（跳过 0 与过近圈，避免大半径扫描）</li>
 	 *   <li>按距 {@code center} 切比雪夫距离排序，最多保留 {@code limit} 个</li>
 	 * </ol>
 	 * TODO: 加一个占领和边界的占比，来区分领土类型，改变集群类型和取边界区块数
@@ -244,10 +241,13 @@ public final class PbsTerritoryAdapter {
 			UUID ownerId,
 			Random random,
 			int borderSampleCount,
-			int expandChebyshev
+			int expandMinChebyshev,
+			int expandMaxChebyshev
 	) {
 		if (center == null || limit <= 0 || ownerId == null || random == null
-				|| borderSampleCount <= 0 || expandChebyshev < 0) {
+				|| borderSampleCount <= 0
+				|| expandMinChebyshev < 1
+				|| expandMaxChebyshev < expandMinChebyshev) {
 			return List.of();
 		}
 		List<ChunkPos> borders = getBorderChunks(level, ownerId);
@@ -259,13 +259,17 @@ public final class PbsTerritoryAdapter {
 		Set<Long> seen = new HashSet<>();
 		List<ChunkPos> candidates = new ArrayList<>();
 		for (ChunkPos border : sampled) {
-			for (int dx = -expandChebyshev; dx <= expandChebyshev; dx++) {
-				for (int dz = -expandChebyshev; dz <= expandChebyshev; dz++) {
+			for (int dx = -expandMaxChebyshev; dx <= expandMaxChebyshev; dx++) {
+				for (int dz = -expandMaxChebyshev; dz <= expandMaxChebyshev; dz++) {
+					int dist = Math.max(Math.abs(dx), Math.abs(dz));
+					if (dist < expandMinChebyshev || dist > expandMaxChebyshev) {
+						continue;
+					}
 					ChunkPos candidate = new ChunkPos(border.x + dx, border.z + dz);
 					if (!seen.add(candidate.toLong())) {
 						continue;
 					}
-					if (getState(level, candidate) != ChunkState.HOSTILE_BORDER) {
+					if (!isSiegeSpawnSite(getState(level, candidate))) {
 						continue;
 					}
 					candidates.add(candidate);
@@ -287,25 +291,15 @@ public final class PbsTerritoryAdapter {
 		return Math.max(Math.abs(a.x - b.x), Math.abs(a.z - b.z));
 	}
 
-	/** 候选 HOSTILE_BORDER 是否紧贴该占领实体的 BORDER/OCCUPIED。 */
-	public static boolean isHostileBorderOf(ServerLevel level, ChunkPos hostile, UUID ownerId) {
-		if (getState(level, hostile) != ChunkState.HOSTILE_BORDER) {
-			return false;
-		}
-		for (int[] d : CARDINAL) {
-			ChunkPos neighbor = new ChunkPos(hostile.x + d[0], hostile.z + d[1]);
-			ChunkState state = getState(level, neighbor);
-			if (!isAssaultable(state)) {
-				continue;
-			}
-			UUID occupying = PlayerBlockStatusLib.queryChunkView(level, neighbor)
-					.map(view -> view.getOccupyingOrg())
-					.orElse(null);
-			if (ownerId.equals(occupying)) {
-				return true;
-			}
-		}
-		return false;
+	/**
+	 * 可作为围城落点的状态：{@code HOSTILE_BORDER} 或 {@code HOSTILE}。不含恶魔区块。
+	 */
+	public static boolean isSiegeSpawnSite(ChunkState state) {
+		return state == ChunkState.HOSTILE_BORDER || (state != null && state.isHostileOccupied());
+	}
+
+	public static boolean isSiegeSpawnSite(ServerLevel level, ChunkPos chunkPos) {
+		return isSiegeSpawnSite(getState(level, chunkPos));
 	}
 
 	public static ChunkState getState(ServerLevel level, ChunkPos chunkPos) {
@@ -321,6 +315,7 @@ public final class PbsTerritoryAdapter {
 				.filter(id -> id != null);
 	}
 
+	/** 仅玩家领地可进攻；{@code HOSTILE} 无主，不是围城 target。 */
 	public static boolean isAssaultable(ChunkState state) {
 		return state == ChunkState.OCCUPIED || state == ChunkState.BORDER;
 	}
@@ -329,16 +324,32 @@ public final class PbsTerritoryAdapter {
 		return isAssaultable(getState(level, chunkPos));
 	}
 
-	/** 4-邻接（不含对角、不含自身）中状态为 OCCUPIED 或 BORDER 的区块。 */
-	public static List<ChunkPos> findAdjacentAssaultChunks(ServerLevel level, ChunkPos center) {
-		List<ChunkPos> result = new ArrayList<>(4);
-		for (int[] d : CARDINAL) {
-			ChunkPos neighbor = new ChunkPos(center.x + d[0], center.z + d[1]);
-			if (isAssaultable(level, neighbor)) {
-				result.add(neighbor);
+	/**
+	 * 切比雪夫距离最近的 {@code OCCUPIED}/{@code BORDER} 区块，不含 {@code center} 自身。
+	 * 从距离 1 扩到 {@code radius}，第一圈有候选即返回（同距多块全给调用方挑选）。
+	 */
+	public static List<ChunkPos> findNearestAssaultChunks(ServerLevel level, ChunkPos center, int radius) {
+		if (level == null || center == null || radius < 1) {
+			return List.of();
+		}
+		for (int r = 1; r <= radius; r++) {
+			List<ChunkPos> ring = new ArrayList<>();
+			for (int dx = -r; dx <= r; dx++) {
+				for (int dz = -r; dz <= r; dz++) {
+					if (Math.max(Math.abs(dx), Math.abs(dz)) != r) {
+						continue;
+					}
+					ChunkPos candidate = new ChunkPos(center.x + dx, center.z + dz);
+					if (isAssaultable(level, candidate)) {
+						ring.add(candidate);
+					}
+				}
+			}
+			if (!ring.isEmpty()) {
+				return ring;
 			}
 		}
-		return result;
+		return List.of();
 	}
 
 	/**
@@ -383,6 +394,15 @@ public final class PbsTerritoryAdapter {
 	}
 
 	/**
+	 * 怪物放块后调用：走 PBS 公开 API {@link PlayerBlockStatusLib#notifyErosionBlockPlaced}。
+	 * {@code level.setBlock} 不会走玩家 {@code BlockItem} mixin，必须手动上报。
+	 * 只记坐标，不计分、不改区块状态。拆除经 {@code setBlockState} 时由 PBS mixin 自动清除。
+	 */
+	public static void notifyErosionBlockPlaced(ServerLevel level, BlockPos pos) {
+		PlayerBlockStatusLib.notifyErosionBlockPlaced(level, pos);
+	}
+
+	/**
 	 * 目标实体（组织或独立玩家）的占领 / 边界 / 持有合计。
 	 * {@code owned} = 该目标 OCCUPIED + BORDER，不是全图扫描。
 	 */
@@ -413,9 +433,9 @@ public final class PbsTerritoryAdapter {
 	}
 
 	/**
-	 * 从恶魔区块列表抽锚点（地狱档专用，不走 HOSTILE_BORDER Bernoulli）。
-	 * 抽中后可再在切比雪夫 ≤ {@code expandChebyshev} 内找 HOSTILE_BORDER 作为实际落点；
-	 * 没有邻接敌对边界时直接落在恶魔区块上。
+	 * 从恶魔区块列表抽锚点（地狱档专用，不走普通围城 Bernoulli）。
+	 * 抽中后可再在切比雪夫 ≤ {@code expandChebyshev} 内找 HOSTILE_BORDER / HOSTILE
+	 * 作为实际落点；没有邻接敌对格时直接落在恶魔区块上。
 	 */
 	public static List<ChunkPos> sampleDemonAnchorSites(
 			ServerLevel level,
@@ -459,7 +479,7 @@ public final class PbsTerritoryAdapter {
 		for (int dx = -expandChebyshev; dx <= expandChebyshev; dx++) {
 			for (int dz = -expandChebyshev; dz <= expandChebyshev; dz++) {
 				ChunkPos candidate = new ChunkPos(origin.x + dx, origin.z + dz);
-				if (getState(level, candidate) == ChunkState.HOSTILE_BORDER && seen.add(candidate.toLong())) {
+				if (isSiegeSpawnSite(getState(level, candidate)) && seen.add(candidate.toLong())) {
 					near.add(candidate);
 				}
 			}

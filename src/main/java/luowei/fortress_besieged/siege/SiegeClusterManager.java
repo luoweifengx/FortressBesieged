@@ -9,22 +9,31 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Stream;
 
+import net.minecraft.core.Holder;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.tags.EnchantmentTags;
+import net.minecraft.util.RandomSource;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.item.enchantment.Enchantment;
+import net.minecraft.world.item.enchantment.EnchantmentHelper;
+import net.minecraft.world.item.enchantment.EnchantmentInstance;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
 
 import luowei.fortress_besieged.FortressBesieged;
 import luowei.fortress_besieged.siege.SiegeClusterSavedData.ClusterSnapshot;
+import luowei.fortress_besieged.siege.goal.SiegeAiHelper;
 import luowei.fortress_besieged.siege.spawn.SiegeClusterConfig;
 import luowei.fortress_besieged.siege.spawn.SiegeClusterTemplate;
 import luowei.fortress_besieged.siege.spawn.SiegeClusterTemplate.LootSpec;
@@ -35,6 +44,7 @@ import luowei.fortress_besieged.siege.spawn.SiegeClusterTemplate.LootSpec;
 public final class SiegeClusterManager {
 	private static final Map<UUID, SiegeCluster> CLUSTERS = new HashMap<>();
 	private static final Map<UUID, UUID> MOB_TO_CLUSTER = new HashMap<>();
+	private static final Map<ResourceKey<Level>, Set<UUID>> PENDING_DISCARD = new HashMap<>();
 	private static final Set<ResourceKey<Level>> LOADED_LEVELS = new HashSet<>();
 
 	private SiegeClusterManager() {
@@ -109,6 +119,11 @@ public final class SiegeClusterManager {
 		if (mob == null) {
 			return;
 		}
+		if (mob.level() instanceof ServerLevel serverLevel && consumePendingDiscard(serverLevel, mob.getUUID())) {
+			discardLeftoverMob(mob);
+			syncSave(serverLevel);
+			return;
+		}
 		UUID clusterId = MOB_TO_CLUSTER.get(mob.getUUID());
 		SiegeCluster cluster = clusterId == null ? null : CLUSTERS.get(clusterId);
 		if (cluster == null) {
@@ -121,6 +136,40 @@ public final class SiegeClusterManager {
 		}
 		if (cluster != null) {
 			cluster.onUnitEntityLoaded(mob);
+		}
+	}
+
+	/** 解散时单位未加载：记下 UUID，区块再进世界时 discard。 */
+	public static void markPendingDiscard(ServerLevel level, UUID mobId) {
+		if (level == null || mobId == null) {
+			return;
+		}
+		PENDING_DISCARD.computeIfAbsent(level.dimension(), key -> new HashSet<>()).add(mobId);
+	}
+
+	private static boolean consumePendingDiscard(ServerLevel level, UUID mobId) {
+		if (level == null || mobId == null) {
+			return false;
+		}
+		Set<UUID> pending = PENDING_DISCARD.get(level.dimension());
+		if (pending == null || !pending.remove(mobId)) {
+			return false;
+		}
+		if (pending.isEmpty()) {
+			PENDING_DISCARD.remove(level.dimension());
+		}
+		return true;
+	}
+
+	private static void discardLeftoverMob(Mob mob) {
+		if (mob == null) {
+			return;
+		}
+		SiegeAiHelper.clearGlowing(mob);
+		SiegeAiHelper.discardVanillaBackup(mob.getUUID());
+		unbindMob(mob);
+		if (!mob.isRemoved()) {
+			mob.discard();
 		}
 	}
 
@@ -150,20 +199,60 @@ public final class SiegeClusterManager {
 		if (loot == null || !loot.enabled()) {
 			return;
 		}
-		if (mob.getRandom().nextDouble() >= loot.chance()) {
+		if (!(mob.level() instanceof ServerLevel level)) {
 			return;
 		}
-		int min = loot.min();
-		int max = loot.max();
-		int count = min + mob.getRandom().nextInt(max - min + 1);
+		dropRolledItem(mob, level, loot);
+		dropEnchantedBooks(mob, level, loot);
+	}
+
+	/** 数量与绿宝石相同，出现概率为绿宝石的 1/5，单独再掷一次。 */
+	private static void dropEnchantedBooks(Mob mob, ServerLevel level, LootSpec loot) {
+		int count = rollLootCount(mob, loot, loot.chance() / 5.0D);
+		if (count <= 0) {
+			return;
+		}
+		RandomSource random = RandomSource.create(mob.getRandom().nextLong());
+		for (int i = 0; i < count; i++) {
+			ItemStack book = rollEnchantedBook(level, random);
+			if (!book.isEmpty()) {
+				mob.spawnAtLocation(level, book);
+			}
+		}
+	}
+
+	/** 原版附魔台：书架 0–15、三个槽位都均匀随机，再从附魔台附魔表里抽。 */
+	private static ItemStack rollEnchantedBook(ServerLevel level, RandomSource random) {
+		ItemStack input = new ItemStack(Items.BOOK);
+		int bookshelves = random.nextInt(16);
+		int slot = random.nextInt(3);
+		int cost = EnchantmentHelper.getEnchantmentCost(random, slot, bookshelves, input);
+		if (cost <= 0) {
+			return ItemStack.EMPTY;
+		}
+		Stream<Holder<Enchantment>> pool = level.registryAccess()
+				.lookupOrThrow(Registries.ENCHANTMENT)
+				.get(EnchantmentTags.IN_ENCHANTING_TABLE)
+				.map(holders -> holders.stream())
+				.orElseGet(Stream::empty);
+		List<EnchantmentInstance> rolled = EnchantmentHelper.selectEnchantment(random, input, cost, pool);
+		if (rolled.isEmpty()) {
+			return ItemStack.EMPTY;
+		}
+		ItemStack book = new ItemStack(Items.ENCHANTED_BOOK);
+		for (EnchantmentInstance instance : rolled) {
+			book.enchant(instance.enchantment(), instance.level());
+		}
+		return book;
+	}
+
+	private static void dropRolledItem(Mob mob, ServerLevel level, LootSpec loot) {
+		int count = rollLootCount(mob, loot, loot.chance());
 		if (count <= 0) {
 			return;
 		}
 		Item item = resolveLootItem(loot.item());
 		if (item == Items.AIR) {
-			return;
-		}
-		if (!(mob.level() instanceof ServerLevel level)) {
 			return;
 		}
 		int remaining = count;
@@ -173,6 +262,15 @@ public final class SiegeClusterManager {
 			mob.spawnAtLocation(level, new ItemStack(item, n));
 			remaining -= n;
 		}
+	}
+
+	private static int rollLootCount(Mob mob, LootSpec loot, double chance) {
+		if (mob.getRandom().nextDouble() >= chance) {
+			return 0;
+		}
+		int min = loot.min();
+		int max = loot.max();
+		return min + mob.getRandom().nextInt(max - min + 1);
 	}
 
 	private static Item resolveLootItem(String raw) {
@@ -208,7 +306,7 @@ public final class SiegeClusterManager {
 				changed = true;
 			}
 		}
-		if (changed || hasClusterIn(level)) {
+		if (changed || hasClusterIn(level) || hasPendingDiscard(level)) {
 			syncSave(level);
 		}
 	}
@@ -221,7 +319,7 @@ public final class SiegeClusterManager {
 		return List.copyOf(CLUSTERS.values());
 	}
 
-	/** 命令解散：卸 Goal、摘票、从存档删除。 */
+	/** 命令解散：清剩余单位、摘票、从存档删除。 */
 	public static void clearLevel(ServerLevel level) {
 		Iterator<Map.Entry<UUID, SiegeCluster>> it = CLUSTERS.entrySet().iterator();
 		while (it.hasNext()) {
@@ -243,6 +341,8 @@ public final class SiegeClusterManager {
 			return;
 		}
 		SiegeClusterSavedData data = SiegeClusterSavedData.get(level);
+		restorePendingDiscard(level, data.pendingDiscard());
+		tryDiscardLoadedPending(level);
 		int restored = 0;
 		for (ClusterSnapshot snapshot : data.clusters()) {
 			if (CLUSTERS.containsKey(snapshot.id())) {
@@ -277,8 +377,8 @@ public final class SiegeClusterManager {
 	 * 不 {@link SiegeCluster#forceDisband}，以免把存档抹空。
 	 */
 	public static void unloadLevel(ServerLevel level) {
-		// 内存里还有集群才写档；二次 unload（STOPPING 后再 UNLOAD）不得用空表覆盖已保存快照。
-		if (hasClusterIn(level)) {
+		// 内存里还有集群或待清理 UUID 才写档；二次 unload 不得用空表覆盖已保存快照。
+		if (hasClusterIn(level) || hasPendingDiscard(level)) {
 			syncSave(level);
 		}
 		Iterator<Map.Entry<UUID, SiegeCluster>> it = CLUSTERS.entrySet().iterator();
@@ -292,6 +392,7 @@ public final class SiegeClusterManager {
 			MOB_TO_CLUSTER.entrySet().removeIf(e -> clusterId.equals(e.getValue()));
 			it.remove();
 		}
+		PENDING_DISCARD.remove(level.dimension());
 		SiegeChunkTickets.releaseAll(level);
 		LOADED_LEVELS.remove(level.dimension());
 	}
@@ -307,13 +408,16 @@ public final class SiegeClusterManager {
 			}
 			snaps.add(cluster.toSnapshot());
 		}
-		SiegeClusterSavedData.get(level).replace(snaps);
+		Set<UUID> pending = PENDING_DISCARD.get(level.dimension());
+		List<UUID> pendingList = pending == null || pending.isEmpty() ? List.of() : List.copyOf(pending);
+		SiegeClusterSavedData.get(level).replace(snaps, pendingList);
 	}
 
 	public static void clearAll() {
 		SiegeChunkTickets.releaseAllLevels();
 		CLUSTERS.clear();
 		MOB_TO_CLUSTER.clear();
+		PENDING_DISCARD.clear();
 		LOADED_LEVELS.clear();
 	}
 
@@ -330,5 +434,36 @@ public final class SiegeClusterManager {
 			}
 		}
 		return false;
+	}
+
+	private static boolean hasPendingDiscard(ServerLevel level) {
+		Set<UUID> pending = PENDING_DISCARD.get(level.dimension());
+		return pending != null && !pending.isEmpty();
+	}
+
+	private static void restorePendingDiscard(ServerLevel level, List<UUID> ids) {
+		if (level == null || ids == null || ids.isEmpty()) {
+			return;
+		}
+		PENDING_DISCARD.computeIfAbsent(level.dimension(), key -> new HashSet<>()).addAll(ids);
+	}
+
+	private static void tryDiscardLoadedPending(ServerLevel level) {
+		Set<UUID> pending = PENDING_DISCARD.get(level.dimension());
+		if (pending == null || pending.isEmpty()) {
+			return;
+		}
+		boolean changed = false;
+		for (UUID mobId : List.copyOf(pending)) {
+			Entity entity = level.getEntity(mobId);
+			if (entity instanceof Mob mob) {
+				consumePendingDiscard(level, mobId);
+				discardLeftoverMob(mob);
+				changed = true;
+			}
+		}
+		if (changed) {
+			syncSave(level);
+		}
 	}
 }

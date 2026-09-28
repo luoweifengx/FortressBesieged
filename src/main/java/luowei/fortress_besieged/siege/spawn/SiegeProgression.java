@@ -17,8 +17,8 @@ import luowei.fortress_besieged.siege.pbs.PbsTerritoryAdapter;
 /**
  * World stage + tier unlock from advancements and demon chunks.
  * {@code worldOwned} is informational only and does not gate stages.
- * Natural siege filters tiers by type duty windows; stage {@code spawn} windows
- * supply chance only.
+ * Natural siege uses a shared duty window for every non-hell cluster type;
+ * stage {@code spawn} windows supply chance only. Blood moon skips that chance.
  */
 public final class SiegeProgression {
 	public static final String TIER_ROADKILL = "roadkill";
@@ -28,6 +28,21 @@ public final class SiegeProgression {
 	public static final String TIER_HELL = "hell";
 
 	public static final String UNLOCK_ALWAYS = "always";
+
+	/** Shared overworld duty window for every non-hell cluster type. */
+	public static final int DUTY_WINDOW_START = 11000;
+	public static final int DUTY_WINDOW_END = 23000;
+
+	/** Overworld journey chance; ~1.7 waves/day at 6 duty rolls. */
+	public static final float CHANCE_JOURNEY = 0.275f;
+	/** Overworld homeland chance; ~1.8 waves/day. */
+	public static final float CHANCE_HOMELAND = 0.308f;
+	/** Overworld hard-stage chance; ~2.1 waves/day. */
+	public static final float CHANCE_HARD = 0.342f;
+	/** Overworld end-stage chance; ~2.3 waves/day. */
+	public static final float CHANCE_END = 0.375f;
+	/** Nether siege chance is this times the overworld stage chance. */
+	public static final float NETHER_CHANCE_MULTIPLIER = 2.0f;
 	public static final String UNLOCK_HOST = "host";
 	public static final String UNLOCK_LEGION = "legion";
 
@@ -96,31 +111,29 @@ public final class SiegeProgression {
 		return switch (tier) {
 			case TIER_ROADKILL -> true;
 			case TIER_SMALL -> !relaxed || world.hasIron();
-			case TIER_HOST -> SiegeDifficulty.isHard(difficulty)
-					? world.hasIronArmor()
-					: world.hasDiamond();
-			case TIER_LEGION -> SiegeDifficulty.isHard(difficulty)
-					? world.hasDiamond()
-					: world.hasDiamond() && world.hasDemonChunk();
+			case TIER_HOST -> world.hasDiamond();
+			case TIER_LEGION -> world.hasDiamond() || world.hasDemonChunk();
 			case TIER_HELL -> world.hasDemonChunk();
 			default -> false;
 		};
 	}
 
 	/**
-	 * Cluster-type duty window (overworld clock). Hell is not gated here.
+	 * Cluster-type duty window (overworld clock). Roadkill / small / host / legion
+	 * share {@link #DUTY_WINDOW_START}–{@link #DUTY_WINDOW_END}. Hell is not gated here.
 	 */
 	public static SpawnWindow dutyWindow(String tier) {
 		if (tier == null) {
 			return null;
 		}
 		return switch (tier) {
-			case TIER_ROADKILL -> new SpawnWindow(7000, 18000, 1.0f);
-			case TIER_SMALL -> new SpawnWindow(9000, 23000, 1.0f);
-			case TIER_HOST -> new SpawnWindow(10000, 22000, 1.0f);
-			case TIER_LEGION -> new SpawnWindow(11000, 19000, 1.0f);
+			case TIER_ROADKILL, TIER_SMALL, TIER_HOST, TIER_LEGION -> sharedDutyWindow();
 			default -> null;
 		};
+	}
+
+	public static SpawnWindow sharedDutyWindow() {
+		return new SpawnWindow(DUTY_WINDOW_START, DUTY_WINDOW_END, 1.0f);
 	}
 
 	public static boolean tierOnDuty(String tier, long timeOfDay) {
@@ -285,15 +298,19 @@ public final class SiegeProgression {
 			stageId = "journey";
 		}
 		return switch (stageId) {
-			case "homeland" -> new SpawnWindow(10000, 22000, 0.12f);
-			case "hard" -> new SpawnWindow(11000, 19000, 0.15f);
-			case "end" -> new SpawnWindow(16000, 23000, 0.20f);
-			default -> new SpawnWindow(7000, 18000, 0.10f);
+			case "homeland" -> new SpawnWindow(DUTY_WINDOW_START, DUTY_WINDOW_END, CHANCE_HOMELAND);
+			case "hard" -> new SpawnWindow(DUTY_WINDOW_START, DUTY_WINDOW_END, CHANCE_HARD);
+			case "end" -> new SpawnWindow(DUTY_WINDOW_START, DUTY_WINDOW_END, CHANCE_END);
+			default -> new SpawnWindow(DUTY_WINDOW_START, DUTY_WINDOW_END, CHANCE_JOURNEY);
 		};
 	}
 
-	public static SpawnWindow defaultNetherSpawnWindow(float chance) {
-		return SiegeDayClock.defaultNetherDueWindow(chance);
+	public static float netherChanceFromOverworld(float overworldChance) {
+		return overworldChance * NETHER_CHANCE_MULTIPLIER;
+	}
+
+	public static SpawnWindow defaultNetherSpawnWindow(float overworldChance) {
+		return SiegeDayClock.defaultNetherDueWindow(netherChanceFromOverworld(overworldChance));
 	}
 
 	private boolean keepTier(String tier, WorldSnapshot world, TierRoll roll, long timeOfDay) {
@@ -419,9 +436,9 @@ public final class SiegeProgression {
 			boolean hasDiamond,
 			Difficulty difficulty
 	) {
-		/** 故土阶段：困难看铁甲，其余看铁锭. */
+		/** 故土阶段：全难度看铁锭（普通规则）. */
 		public boolean hostStageUnlocked() {
-			return SiegeDifficulty.isHard(difficulty) ? hasIronArmor : hasIron;
+			return hasIron;
 		}
 
 		public boolean hostUnlocked() {

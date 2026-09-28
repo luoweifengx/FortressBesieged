@@ -24,6 +24,9 @@ bin/
 .classpath
 .project
 
+# cursor hook runtime state
+.cursor/hooks/state/
+
 # macos
 
 *.DS_Store

@@ -1,14 +1,17 @@
 package luowei.fortress_besieged.siege.spawn;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 import java.util.UUID;
 
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 
 import luowei.fortress_besieged.FortressBesieged;
@@ -16,12 +19,11 @@ import luowei.fortress_besieged.siege.SiegePlayerProtection;
 import luowei.fortress_besieged.siege.pbs.PbsTerritoryAdapter;
 
 /**
- * Wilderness pack ticker for every dimension: player-around sparse scan,
- * then attempt chance, then NATURAL site pick, then wilderness templates.
+ * Wilderness pack ticker: per-player leave-territory timer, then attempt
+ * chance, then NATURAL site pick from wilderness templates.
  */
 public final class WildernessSpawnScheduler {
-	private static final Map<ResourceKey<Level>, Long> LAST_SCAN = new HashMap<>();
-	private static final Map<UUID, Long> NEXT_ATTEMPT_AT = new HashMap<>();
+	private static final Map<ResourceKey<Level>, Map<UUID, Long>> AWAY_SINCE = new HashMap<>();
 
 	private WildernessSpawnScheduler() {
 	}
@@ -31,55 +33,70 @@ public final class WildernessSpawnScheduler {
 			return;
 		}
 		WildernessPackTracker.pruneLevel(level);
-		scanSparse(level);
+		tickAwayPlayers(level);
 	}
 
-	private static void scanSparse(ServerLevel level) {
+	private static void tickAwayPlayers(ServerLevel level) {
 		long gameTime = level.getGameTime();
-		long last = LAST_SCAN.getOrDefault(level.dimension(), Long.MIN_VALUE);
-		int scanInterval = SiegeDifficulty.scaledInterval(
-				WildernessSpawnConfig.SCAN_INTERVAL_TICKS,
-				SiegeDifficulty.of(level));
-		if (last != Long.MIN_VALUE && gameTime - last < scanInterval) {
-			return;
-		}
-		LAST_SCAN.put(level.dimension(), gameTime);
-
-		int budget = WildernessSpawnConfig.BUDGET_PER_SCAN;
+		Map<UUID, Long> awaySince = AWAY_SINCE.computeIfAbsent(level.dimension(), key -> new HashMap<>());
+		Set<UUID> seen = new HashSet<>();
+		int budget = WildernessSpawnConfig.BUDGET_PER_TICK;
+		MinecraftServer server = level.getServer();
 		for (ServerPlayer player : level.players()) {
-			if (budget <= 0) {
-				break;
+			if (player == null || player.isSpectator() || !player.isAlive()) {
+				continue;
 			}
-			if (trySpawnForPlayer(level, player, gameTime)) {
+			UUID playerId = player.getUUID();
+			seen.add(playerId);
+			if (trySpawnForPlayer(level, server, player, playerId, gameTime, awaySince, budget > 0)) {
 				budget--;
 			}
 		}
+		awaySince.keySet().removeIf(id -> !seen.contains(id));
+		if (awaySince.isEmpty()) {
+			AWAY_SINCE.remove(level.dimension());
+		}
 	}
 
-	private static boolean trySpawnForPlayer(ServerLevel level, ServerPlayer player, long gameTime) {
-		if (player == null || player.isSpectator() || !player.isAlive()) {
-			return false;
-		}
-		UUID playerId = player.getUUID();
+	/**
+	 * @return true if a pack actually spawned (consumes the per-tick budget)
+	 */
+	private static boolean trySpawnForPlayer(
+			ServerLevel level,
+			MinecraftServer server,
+			ServerPlayer player,
+			UUID playerId,
+			long gameTime,
+			Map<UUID, Long> awaySince,
+			boolean budgetLeft
+	) {
 		String name = SiegeSpawnMonitor.target(level, playerId);
-		long readyAt = NEXT_ATTEMPT_AT.getOrDefault(playerId, 0L);
-		if (gameTime < readyAt) {
-			return false;
-		}
-
-		MinecraftServer server = level.getServer();
 		UUID pollTargetId = PbsTerritoryAdapter.resolvePollTargetForPlayer(server, playerId);
 		if (!SiegePlayerProtection.isTimeToBesiege(server, pollTargetId)) {
+			awaySince.remove(playerId);
 			FortressBesieged.LOGGER.debug(
 					"[wilderness spawn] skip player={} reason=protected pollTarget={}",
 					name,
 					SiegeSpawnMonitor.target(level, pollTargetId));
 			return false;
 		}
+		if (isOwnTerritory(level, player, pollTargetId)) {
+			awaySince.remove(playerId);
+			return false;
+		}
+
+		awaySince.putIfAbsent(playerId, gameTime);
+		if (gameTime - awaySince.get(playerId) < WildernessSpawnConfig.AWAY_INTERVAL_TICKS) {
+			return false;
+		}
+		if (!budgetLeft) {
+			return false;
+		}
 
 		Random random = new Random(level.random.nextLong());
 		float chance = SiegeClusterConfig.wilderness().attemptChance();
 		if (!(random.nextFloat() < chance)) {
+			awaySince.put(playerId, gameTime);
 			FortressBesieged.LOGGER.debug(
 					"[wilderness spawn] chance miss player={} chance={}",
 					name,
@@ -88,28 +105,31 @@ public final class WildernessSpawnScheduler {
 		}
 
 		WildernessSpawner.SpawnResult result = WildernessSpawner.spawnAround(level, player, pollTargetId, random);
-		if (result.mobs().isEmpty()) {
-			NEXT_ATTEMPT_AT.put(playerId, gameTime + WildernessSpawnConfig.FAIL_COOLDOWN_TICKS);
+		awaySince.put(playerId, gameTime);
+		return !result.mobs().isEmpty();
+	}
+
+	/** Own or org OCCUPIED/BORDER. Anyone else's claim, NATURAL, HOSTILE, DEMON are away. */
+	private static boolean isOwnTerritory(ServerLevel level, ServerPlayer player, UUID pollTargetId) {
+		ChunkPos chunk = player.chunkPosition();
+		if (!PbsTerritoryAdapter.isAssaultable(level, chunk)) {
 			return false;
 		}
-		return true;
+		if (pollTargetId == null) {
+			return false;
+		}
+		return PbsTerritoryAdapter.getOccupyingOrg(level, chunk)
+				.map(pollTargetId::equals)
+				.orElse(false);
 	}
 
 	public static void clearLevel(ResourceKey<Level> dimension) {
 		if (dimension != null) {
-			LAST_SCAN.remove(dimension);
+			AWAY_SINCE.remove(dimension);
 		}
 	}
 
 	public static void clearAll() {
-		LAST_SCAN.clear();
-		NEXT_ATTEMPT_AT.clear();
-	}
-
-	/** Exposed for tests; not a player API. */
-	static void setCooldown(UUID playerId, long nextAttemptAt) {
-		if (playerId != null) {
-			NEXT_ATTEMPT_AT.put(playerId, nextAttemptAt);
-		}
+		AWAY_SINCE.clear();
 	}
 }

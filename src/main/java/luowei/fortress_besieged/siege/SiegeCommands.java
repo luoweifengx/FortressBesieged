@@ -12,6 +12,7 @@ import com.mojang.brigadier.suggestion.SuggestionProvider;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.commands.SharedSuggestionProvider;
+import net.minecraft.commands.arguments.EntityArgument;
 import net.minecraft.commands.arguments.UuidArgument;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
@@ -23,6 +24,8 @@ import net.minecraft.world.level.ChunkPos;
 
 import luowei.fortress_besieged.siege.pbs.PbsTerritoryAdapter;
 import luowei.fortress_besieged.siege.structure.MedievalCastleBuilder;
+import luowei.fortress_besieged.siege.spawn.BloodMoon;
+import luowei.fortress_besieged.siege.spawn.UndeadInvasion;
 import luowei.fortress_besieged.siege.spawn.SiegeClusterConfig;
 import luowei.fortress_besieged.siege.spawn.SiegeClusterSpawner;
 import luowei.fortress_besieged.siege.spawn.SiegeClusterTemplate;
@@ -45,6 +48,13 @@ import luowei.player_block_status.lib.api.PlayerBlockStatusLib;
  * /siege recipes                  — list siege and wilderness templates (and legacy aliases)
  * /siege create [chunkRadius]     — legacy: absorb nearby natural monsters
  * /siege castle                   — place the blueprint courtyard castle in front of the player
+ * /siege unprotect                 — lift new-player protection for the executor
+ * /siege unprotect &lt;player&gt;      — online player
+ * /siege unprotect entity &lt;uuid&gt; — player or org UUID (org → owner)
+ * /siege bloodmoon                 — status
+ * /siege bloodmoon start|stop      — force on/off
+ * /siege undead                    — nether undead-invasion status
+ * /siege undead start|stop         — start at the player's nether chunk, or stop
  * /siege status
  * /siege disband
  * </pre>
@@ -100,6 +110,33 @@ public final class SiegeCommands {
 										IntegerArgumentType.getInteger(ctx, "chunkRadius")))))
 				.then(Commands.literal("castle")
 						.executes(ctx -> placeCastle(ctx.getSource())))
+				.then(Commands.literal("unprotect")
+						.executes(ctx -> unprotectSelf(ctx.getSource()))
+						.then(Commands.literal("entity")
+								.then(Commands.argument("target", UuidArgument.uuid())
+										.executes(ctx -> unprotect(
+												ctx.getSource(),
+												UuidArgument.getUuid(ctx, "target")))))
+						.then(Commands.argument("player", EntityArgument.player())
+								.executes(ctx -> unprotect(
+										ctx.getSource(),
+										EntityArgument.getPlayer(ctx, "player").getUUID()))))
+				.then(Commands.literal("bloodmoon")
+						.executes(ctx -> bloodMoonStatus(ctx.getSource()))
+						.then(Commands.literal("start")
+								.executes(ctx -> bloodMoonStart(ctx.getSource())))
+						.then(Commands.literal("stop")
+								.executes(ctx -> bloodMoonStop(ctx.getSource())))
+						.then(Commands.literal("status")
+								.executes(ctx -> bloodMoonStatus(ctx.getSource()))))
+				.then(Commands.literal("undead")
+						.executes(ctx -> undeadStatus(ctx.getSource()))
+						.then(Commands.literal("start")
+								.executes(ctx -> undeadStart(ctx.getSource())))
+						.then(Commands.literal("stop")
+								.executes(ctx -> undeadStop(ctx.getSource())))
+						.then(Commands.literal("status")
+								.executes(ctx -> undeadStatus(ctx.getSource()))))
 				.then(Commands.literal("status")
 						.executes(ctx -> listStatus(ctx.getSource())))
 				.then(Commands.literal("disband")
@@ -307,7 +344,54 @@ public final class SiegeCommands {
 		return n;
 	}
 
+	private static int bloodMoonStatus(CommandSourceStack source) {
+		source.sendSuccess(() -> Component.literal(BloodMoon.describe(source.getServer())), false);
+		return BloodMoon.isActive(source.getServer()) ? 1 : 0;
+	}
+
+	private static int bloodMoonStart(CommandSourceStack source) {
+		boolean started = BloodMoon.start(source.getServer());
+		source.sendSuccess(() -> Component.literal(
+				started ? "Blood moon started (forced)" : "Blood moon already active (forced)"), true);
+		return 1;
+	}
+
+	private static int bloodMoonStop(CommandSourceStack source) {
+		boolean stopped = BloodMoon.stop(source.getServer());
+		source.sendSuccess(() -> Component.literal(
+				stopped ? "Blood moon stopped" : "Blood moon already inactive"), true);
+		return 1;
+	}
+
+	private static int undeadStatus(CommandSourceStack source) {
+		source.sendSuccess(() -> Component.literal(UndeadInvasion.describe(source.getServer())), false);
+		return UndeadInvasion.isActive(source.getServer()) ? 1 : 0;
+	}
+
+	private static int undeadStart(CommandSourceStack source) {
+		ServerPlayer player = source.getPlayer();
+		if (player == null) {
+			source.sendFailure(Component.literal("Player required"));
+			return 0;
+		}
+		UndeadInvasion.StartResult result = UndeadInvasion.start(player);
+		if (!result.started()) {
+			source.sendFailure(Component.literal(result.message()));
+			return 0;
+		}
+		source.sendSuccess(() -> Component.literal(result.message()), true);
+		return 1;
+	}
+
+	private static int undeadStop(CommandSourceStack source) {
+		boolean stopped = UndeadInvasion.stop(source.getServer());
+		source.sendSuccess(() -> Component.literal(
+				stopped ? "Undead invasion stopped" : "Undead invasion already inactive"), true);
+		return 1;
+	}
+
 	private static int listStatus(CommandSourceStack source) {
+		source.sendSuccess(() -> Component.literal(BloodMoon.describe(source.getServer())), false);
 		int count = SiegeClusterManager.clusterCount();
 		source.sendSuccess(() -> Component.literal("Active siege clusters: " + count), false);
 		for (SiegeCluster cluster : SiegeClusterManager.clusters()) {
@@ -342,6 +426,31 @@ public final class SiegeCommands {
 						+ " state=" + cluster.getState()
 						+ " anchor=" + formatChunk(anchor)
 						+ " (legacy: collected nearby monsters)"),
+				true);
+		return 1;
+	}
+
+	private static int unprotectSelf(CommandSourceStack source) {
+		ServerPlayer player = source.getPlayer();
+		if (player == null) {
+			source.sendFailure(Component.literal("Player required (or use /siege unprotect entity <uuid>)"));
+			return 0;
+		}
+		return unprotect(source, player.getUUID());
+	}
+
+	private static int unprotect(CommandSourceStack source, UUID targetId) {
+		MinecraftServer server = source.getServer();
+		UUID playerId = SiegePlayerProtection.liftProtection(server, targetId);
+		if (playerId == null) {
+			source.sendFailure(Component.literal("No player id for " + targetId));
+			return 0;
+		}
+		int days = SiegePlayerProtection.daysInGame(server, playerId);
+		source.sendSuccess(() -> Component.literal(
+				"Lifted siege protection for " + SiegeSpawnMonitor.target(server, playerId)
+						+ " daysInGame=" + days
+						+ " isTimeToBesiege=true"),
 				true);
 		return 1;
 	}

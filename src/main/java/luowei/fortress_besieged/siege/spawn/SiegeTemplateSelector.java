@@ -55,7 +55,7 @@ public final class SiegeTemplateSelector {
 
 	/**
 	 * Wilderness packs: own stages + templates. Hell weight is still 0
-	 * (spawn chunk is {@code NATURAL}, never {@code DEMON}).
+	 * (spawn chunk is {@code NATURAL}, never {@code DEMON} or {@code HOSTILE}).
 	 */
 	public static Selection rollWilderness(ServerLevel level, UUID targetId, Random random) {
 		return roll(level, targetId, random, SiegeClusterConfig.wilderness(), true, false);

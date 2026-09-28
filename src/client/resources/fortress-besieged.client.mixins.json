@@ -3,7 +3,8 @@
 	"package": "luowei.fortress_besieged.client.mixin",
 	"compatibilityLevel": "JAVA_21",
 	"client": [
-		"ExampleClientMixin"
+		"SkyRendererMixin",
+		"LerpingBossEventMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1

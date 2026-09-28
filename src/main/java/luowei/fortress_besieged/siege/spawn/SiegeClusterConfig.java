@@ -277,26 +277,7 @@ public final class SiegeClusterConfig {
 		if (id == null || id.isBlank()) {
 			throw new IllegalArgumentException("cluster missing id");
 		}
-		JsonObject countJson = json.has("count") && json.get("count").isJsonObject()
-				? json.getAsJsonObject("count")
-				: new JsonObject();
-		List<CountBucket> buckets = new ArrayList<>();
-		if (countJson.has("buckets") && countJson.get("buckets").isJsonArray()) {
-			for (JsonElement element : countJson.getAsJsonArray("buckets")) {
-				if (!element.isJsonObject()) {
-					continue;
-				}
-				JsonObject row = element.getAsJsonObject();
-				buckets.add(new CountBucket(
-						getInt(row, "min", 3),
-						getInt(row, "max", 3),
-						getInt(row, "weight", 1)));
-			}
-		}
-		CountSpec count = new CountSpec(
-				getInt(countJson, "min", 3),
-				getInt(countJson, "max", 3),
-				buckets);
+		CountSpec count = parseCountSpec(json);
 		List<SpeciesSpec> species = new ArrayList<>();
 		if (json.has("species") && json.get("species").isJsonArray()) {
 			for (JsonElement element : json.getAsJsonArray("species")) {
@@ -427,6 +408,42 @@ public final class SiegeClusterConfig {
 
 	private static String getString(JsonObject json, String key, String fallback) {
 		return json.has(key) && json.get(key).isJsonPrimitive() ? json.get(key).getAsString() : fallback;
+	}
+
+	private static CountSpec parseCountSpec(JsonObject json) {
+		JsonObject countJson = json.has("count") && json.get("count").isJsonObject()
+				? json.getAsJsonObject("count")
+				: new JsonObject();
+		CountSpec base = parseCountRange(countJson);
+		Map<String, CountSpec> byDifficulty = new LinkedHashMap<>();
+		if (json.has("countByDifficulty") && json.get("countByDifficulty").isJsonObject()) {
+			for (Map.Entry<String, JsonElement> entry : json.getAsJsonObject("countByDifficulty").entrySet()) {
+				if (entry.getValue() != null && entry.getValue().isJsonObject()) {
+					byDifficulty.put(entry.getKey().toLowerCase(), parseCountRange(entry.getValue().getAsJsonObject()));
+				}
+			}
+		}
+		return new CountSpec(base.min(), base.max(), base.buckets(), byDifficulty);
+	}
+
+	private static CountSpec parseCountRange(JsonObject countJson) {
+		List<CountBucket> buckets = new ArrayList<>();
+		if (countJson.has("buckets") && countJson.get("buckets").isJsonArray()) {
+			for (JsonElement element : countJson.getAsJsonArray("buckets")) {
+				if (!element.isJsonObject()) {
+					continue;
+				}
+				JsonObject row = element.getAsJsonObject();
+				buckets.add(new CountBucket(
+						getInt(row, "min", 3),
+						getInt(row, "max", 3),
+						getInt(row, "weight", 1)));
+			}
+		}
+		return new CountSpec(
+				getInt(countJson, "min", 3),
+				getInt(countJson, "max", 3),
+				buckets);
 	}
 
 	private static float clampChance(float chance) {

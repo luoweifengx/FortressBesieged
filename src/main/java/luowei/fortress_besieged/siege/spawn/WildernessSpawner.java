@@ -25,6 +25,7 @@ import luowei.player_block_status.lib.chunk.ChunkState;
 
 /**
  * Spawns an ephemeral wilderness pack in {@code NATURAL} columns around a player.
+ * Not {@code HOSTILE_BORDER}, {@code HOSTILE}, occupied territory, or {@code DEMON}.
  * No persistence, no chunk tickets, no {@code SiegeCluster}.
  */
 public final class WildernessSpawner {
@@ -103,11 +104,11 @@ public final class WildernessSpawner {
 			SiegeClusterTemplate template,
 			Random random
 	) {
-		int count = template.rollCount(random);
+		int count = template.rollCount(random, level.getDifficulty());
 		List<Mob> spawned = new ArrayList<>(count);
 		RandomSource randomSource = RandomSource.create(random.nextLong());
 		for (int i = 0; i < count; i++) {
-			SpeciesSpec species = template.rollSpecies(random);
+			SpeciesSpec species = template.rollSpecies(random, SiegeDayClock.dayIndex(level));
 			if (species == null) {
 				continue;
 			}
